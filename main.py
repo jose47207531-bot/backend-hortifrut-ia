@@ -2,9 +2,11 @@ import google.generativeai as genai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import os
 
 # 1. Configura tu IA (Asegúrate de poner tu API Key real aquí)
-genai.configure(api_key="AIzaSyBJdw-4qtQbBYIkcjKIH_rJ938eeJOutdc")
+api_key = os.environ.get("GEMINI_API_KEY")
+genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 app = FastAPI()
