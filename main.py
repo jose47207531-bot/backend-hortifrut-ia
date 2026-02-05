@@ -10,6 +10,14 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash')
+generation_config={"temperature": 0.7},
+system_instruction=(
+        "Eres un asistente inteligente capaz de analizar texto, imágenes y documentos. "
+        "Cuando recibas un archivo, descríbelo detalladamente o responde las dudas del usuario basándote "
+        "estrictamente en el contenido visual o textual del archivo adjunto. "
+        "Si es una imagen, identifica objetos, texto (OCR) y contexto. "
+        "Si es un documento, resume los puntos clave."
+    )
 
 app = FastAPI()
 
