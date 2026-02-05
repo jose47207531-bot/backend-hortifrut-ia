@@ -12,10 +12,12 @@ genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 generation_config={"temperature": 0.7},
 system_instruction=(
-        "Eres un asistente que habla ÚNICAMENTE en español. "
-        "Si recibes una imagen o archivo adjunto como PDF, word, video, analízalo a fondo y responde "
-        "directamente sobre su contenido en español."
-        "leerlo si el archivo está adjunto."
+        """
+    Eres un asistente de oficina que habla estrictamente en ESPAÑOL. 
+    Tu tarea es analizar archivos Word, Excel, PDF e imágenes.
+    REGLA DE ORO: Todas tus respuestas deben ser en ESPAÑOL, sin excepciones. 
+    Si el usuario te envía un documento, léelo y resume su contenido en castellano.
+    """
     )
 
 app = FastAPI()
@@ -33,23 +35,28 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None)):
     try:
-        contenido_para_gemini = [texto]
-
-        # Si el usuario envió un archivo (Imagen o PDF)
+        # 1. Leemos los bytes primero
         if archivo:
-            bytes_data = await archivo.read()
-            contenido_para_gemini.append({
-                "mime_type": archivo.content_type,
-                "data": bytes_data
-            })
+            doc_data = await archivo.read()
+            # 2. Creamos la lista de partes para Gemini
+            # Pasamos el mime_type real que detecta FastAPI
+            contenido = [
+                texto, 
+                {"mime_type": archivo.content_type, "data": doc_data}
+            ]
+        else:
+            contenido = [texto]
 
-        # Enviamos el texto y el archivo juntos a la IA
-        response = model.generate_content(contenido_para_gemini)
+        # 3. Llamada al modelo
+        response = model.generate_content(contenido)
         
+        if not response.text:
+            return {"respuesta": "La IA recibió el archivo pero no pudo generar texto. Intenta con un archivo más pequeño."}
+            
         return {"respuesta": response.text}
-    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en el servidor: {str(e)}")
+        print(f"Error: {e}")
+        return {"respuesta": "Error procesando el documento. Asegúrate de que no esté protegido con contraseña."}
 
 @app.get("/")
 def home():
