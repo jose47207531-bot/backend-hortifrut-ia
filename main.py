@@ -9,7 +9,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 # 1. Configura tu IA (Asegúrate de poner tu API Key real aquí)
 api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 generation_config={"temperature": 0.7},
 system_instruction=(
         "Eres un asistente inteligente capaz de analizar texto, imágenes y documentos. "
