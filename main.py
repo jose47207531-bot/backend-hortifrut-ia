@@ -12,11 +12,10 @@ genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 generation_config={"temperature": 0.7},
 system_instruction=(
-        "Eres un asistente inteligente capaz de analizar texto, imágenes y documentos. "
-        "Cuando recibas un archivo, descríbelo detalladamente o responde las dudas del usuario basándote "
-        "estrictamente en el contenido visual o textual del archivo adjunto. "
-        "Si es una imagen, identifica objetos, texto (OCR) y contexto. "
-        "Si es un documento, resume los puntos clave."
+        "Eres un asistente que habla ÚNICAMENTE en español. "
+        "Si recibes una imagen o archivo adjunto como PDF, word, video, analízalo a fondo y responde "
+        "directamente sobre su contenido en español."
+        "leerlo si el archivo está adjunto."
     )
 
 app = FastAPI()
