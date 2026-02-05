@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 
 # 1. Configura tu IA (Asegúrate de poner tu API Key real aquí)
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -19,17 +21,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class Pregunta(BaseModel):
-    texto: str
+
 
 @app.post("/chat")
-async def chat(pregunta: Pregunta):
+async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None)):
     try:
-        # Esto envía la pregunta directamente a la IA de Google
-        response = model.generate_content(pregunta.texto)
+        contenido_para_gemini = [texto]
+
+        # Si el usuario envió un archivo (Imagen o PDF)
+        if archivo:
+            bytes_data = await archivo.read()
+            contenido_para_gemini.append({
+                "mime_type": archivo.content_type,
+                "data": bytes_data
+            })
+
+        # Enviamos el texto y el archivo juntos a la IA
+        response = model.generate_content(contenido_para_gemini)
+        
         return {"respuesta": response.text}
+    
     except Exception as e:
-        return {"error": f"Error de conexión: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"Error en el servidor: {str(e)}")
 
 @app.get("/")
 def home():
