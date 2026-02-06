@@ -23,6 +23,13 @@ def extraer_texto_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
+def jotform_ping():
+    r = requests.get(
+        "https://api.jotform.com/user",
+        headers={"APIKEY": os.getenv("JOTFORM_API_KEY")}
+    )
+    return r.json()
+
 def obtener_forms_jotform():
     url = "https://api.jotform.com/user/forms"
     headers = {
