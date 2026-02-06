@@ -23,13 +23,6 @@ def extraer_texto_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
-def jotform_ping():
-    r = requests.get(
-        "https://api.jotform.com/user",
-        headers={"APIKEY": os.getenv("JOTFORM_API_KEY")}
-    )
-    return r.json()
-
 def obtener_forms_jotform():
     url = "https://api.jotform.com/user/forms"
     headers = {
@@ -41,8 +34,11 @@ def obtener_forms_jotform():
 
     return data.get("content", [])
 
-def obtener_mantenimientos_todos_forms(limit_por_form=3):
-    forms = obtener_forms_jotform()
+def obtener_mantenimientos_todos_forms(
+    max_forms=5,
+    limit_por_form=3
+):
+    forms = obtener_forms_jotform()[:max_forms]
     headers = {
         "APIKEY": os.getenv("JOTFORM_API_KEY")
     }
@@ -53,11 +49,15 @@ def obtener_mantenimientos_todos_forms(limit_por_form=3):
         form_id = form["id"]
         form_title = form["title"]
 
-        url = f"https://api.jotform.com/form/{form_id}/submissions?limit={limit_por_form}&orderby=created_at"
-        r = requests.get(url, headers=headers)
+        url = (
+            f"https://api.jotform.com/form/{form_id}/submissions"
+            f"?limit={limit_por_form}&orderby=created_at"
+        )
+
+        r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
 
-        if "content" not in data:
+        if "content" not in data or not data["content"]:
             continue
 
         contexto += f"\n===== FORMULARIO: {form_title} =====\n"
@@ -213,10 +213,9 @@ Con base SOLO en esta información, responde la pregunta:
    
     except Exception as e:
         print("ERROR:", e)
-        return {"respuesta": "Error interno",
-            "detalle": str(e)}
+        return {"Ocurrió un error procesando la información."}
         
-#"respuesta": "Ocurrió un error procesando la información.", texto va dentro de return
+
 
 @app.get("/jotform/ping")
 def jotform_ping():
