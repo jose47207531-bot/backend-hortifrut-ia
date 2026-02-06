@@ -23,6 +23,46 @@ def extraer_texto_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
+def obtener_forms_jotform():
+    url = "https://api.jotform.com/user/forms"
+    headers = {
+        "APIKEY": os.getenv("JOTFORM_API_KEY")
+    }
+
+    r = requests.get(url, headers=headers)
+    data = r.json()
+
+    return data.get("content", [])
+
+def obtener_mantenimientos_todos_forms(limit_por_form=3):
+    forms = obtener_forms_jotform()
+    headers = {
+        "APIKEY": os.getenv("JOTFORM_API_KEY")
+    }
+
+    contexto = ""
+
+    for form in forms:
+        form_id = form["id"]
+        form_title = form["title"]
+
+        url = f"https://api.jotform.com/form/{form_id}/submissions?limit={limit_por_form}&orderby=created_at"
+        r = requests.get(url, headers=headers)
+        data = r.json()
+
+        if "content" not in data:
+            continue
+
+        contexto += f"\n===== FORMULARIO: {form_title} =====\n"
+
+        for sub in data["content"]:
+            for ans in sub["answers"].values():
+                pregunta = ans.get("text", "")
+                respuesta = ans.get("answer", "")
+                contexto += f"{pregunta}: {respuesta}\n"
+
+    return contexto
+
 def obtener_mantenimientos_jotform(limit=5):
     FORM_ID = os.getenv("JOTFORM_FORM_ID")
     API_KEY = os.getenv("JOTFORM_API_KEY")
@@ -128,7 +168,7 @@ async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None
 
         # 2️⃣ Si NO hay archivo → consultar Jotform
         if not texto_documento.strip():
-            contexto_jotform = obtener_mantenimientos_jotform()
+            contexto_jotform = obtener_mantenimientos_todos_forms()
 
         # 3️⃣ Construir prompt inteligente
         if texto_documento.strip():
@@ -144,6 +184,13 @@ Responde usando el documento.
         elif contexto_jotform.strip():
             prompt = f"""
 Eres un asistente de mantenimiento industrial.
+
+Dispones de registros REALES provenientes de múltiples formularios
+de mantenimiento, inspección y cambios de repuestos.
+
+Responde SOLO usando esta información.
+Si no hay datos suficientes, dilo claramente.
+
 
 REGISTROS REALES DE MANTENIMIENTO (JOTFORM):
 {contexto_jotform}
