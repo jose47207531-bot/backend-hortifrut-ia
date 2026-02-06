@@ -88,7 +88,7 @@ PREGUNTA:
 {texto}
 
 DOCUMENTO:
-{texto_documento[:8000]}
+{texto_documento}
 """
         else:
             prompt = texto
