@@ -218,12 +218,15 @@ Con base SOLO en esta información, responde la pregunta:
         
 #"respuesta": "Ocurrió un error procesando la información.", texto va dentro de return
 
-@app.get("/jotform/raw")
-def jotform_raw():
-    return {
-        "form_id": os.getenv("JOTFORM_FORM_ID"),
-        "api_key_existe": bool(os.getenv("JOTFORM_API_KEY"))
-    }
+@app.get("/jotform/ping")
+def jotform_ping():
+    r = requests.get(
+        "https://api.jotform.com/user",
+        headers={
+            "APIKEY": os.getenv("JOTFORM_API_KEY")
+        }
+    )
+    return r.json()
 
 
 
