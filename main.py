@@ -9,6 +9,8 @@ import pdfplumber
 from docx import Document
 from io import BytesIO
 import uvicorn
+import requests
+
 
 def extraer_texto_pdf(data: bytes) -> str:
     texto = ""
@@ -51,7 +53,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/jotform/test")
+def test_jotform():
+    try:
+        url = "https://api.jotform.com/user"
+        headers = {
+            "APIKEY": os.getenv("JOTFORM_API_KEY")
+        }
 
+        r = requests.get(url, headers=headers)
+        return r.json()
+
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/chat")
 async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None)):
@@ -109,3 +123,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 8000))
     )
+    
