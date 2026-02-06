@@ -156,10 +156,13 @@ Con base SOLO en esta información, responde la pregunta:
 
         response = model.generate_content(prompt)
         return {"respuesta": response.text}
-
+   
     except Exception as e:
         print("ERROR:", e)
-        return {"respuesta": "Ocurrió un error procesando la información."}
+        return {"respuesta": "Error interno",
+            "detalle": str(e)}
+        
+#"respuesta": "Ocurrió un error procesando la información.", texto va dentro de return
 @app.get("/")
 def home():
     return {"status": "Servidor de IA Activo"}
