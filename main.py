@@ -23,6 +23,34 @@ def extraer_texto_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
+def obtener_mantenimientos_jotform(limit=5):
+    FORM_ID = os.getenv("JOTFORM_FORM_ID")
+    API_KEY = os.getenv("JOTFORM_API_KEY")
+
+    if not FORM_ID or not API_KEY:
+        return ""
+
+    url = f"https://api.jotform.com/form/{FORM_ID}/submissions?limit={limit}&orderby=created_at"
+    headers = {
+        "APIKEY": API_KEY
+    }
+
+    r = requests.get(url, headers=headers)
+    data = r.json()
+
+    if "content" not in data or not data["content"]:
+        return ""
+
+    texto = ""
+    for i, sub in enumerate(data["content"], start=1):
+        texto += f"\n--- MANTENIMIENTO #{i} ---\n"
+        for _, ans in sub["answers"].items():
+            pregunta = ans.get("text", "")
+            respuesta = ans.get("answer", "")
+            texto += f"{pregunta}: {respuesta}\n"
+
+    return texto
+
 # 1. Configura tu IA (Asegúrate de poner tu API Key real aquí)
 api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
@@ -71,7 +99,9 @@ def test_jotform():
 async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None)):
     try:
         texto_documento = ""
+        contexto_jotform = ""
 
+        # 1️⃣ Si hay archivo, se usa
         if archivo:
             data = await archivo.read()
             mime = archivo.content_type
@@ -96,13 +126,30 @@ async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None
             else:
                 raise HTTPException(status_code=400, detail="Tipo de archivo no soportado")
 
+        # 2️⃣ Si NO hay archivo → consultar Jotform
+        if not texto_documento.strip():
+            contexto_jotform = obtener_mantenimientos_jotform()
+
+        # 3️⃣ Construir prompt inteligente
         if texto_documento.strip():
             prompt = f"""
-PREGUNTA:
+PREGUNTA DEL USUARIO:
 {texto}
 
-DOCUMENTO:
+DOCUMENTO ADJUNTO:
 {texto_documento}
+
+Responde usando el documento.
+"""
+        elif contexto_jotform.strip():
+            prompt = f"""
+Eres un asistente de mantenimiento industrial.
+
+REGISTROS REALES DE MANTENIMIENTO (JOTFORM):
+{contexto_jotform}
+
+Con base SOLO en esta información, responde la pregunta:
+{texto}
 """
         else:
             prompt = texto
@@ -112,7 +159,7 @@ DOCUMENTO:
 
     except Exception as e:
         print("ERROR:", e)
-        return {"respuesta": "No pude procesar el documento. Puede estar escaneado o dañado."}
+        return {"respuesta": "Ocurrió un error procesando la información."}
 @app.get("/")
 def home():
     return {"status": "Servidor de IA Activo"}
