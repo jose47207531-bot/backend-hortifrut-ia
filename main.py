@@ -163,6 +163,16 @@ Con base SOLO en esta información, responde la pregunta:
             "detalle": str(e)}
         
 #"respuesta": "Ocurrió un error procesando la información.", texto va dentro de return
+
+@app.get("/jotform/raw")
+def jotform_raw():
+    return {
+        "form_id": os.getenv("JOTFORM_FORM_ID"),
+        "api_key_existe": bool(os.getenv("JOTFORM_API_KEY"))
+    }
+
+
+
 @app.get("/")
 def home():
     return {"status": "Servidor de IA Activo"}
