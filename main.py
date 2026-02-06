@@ -5,19 +5,39 @@ from pydantic import BaseModel
 import os
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import pdfplumber
+from docx import Document
+from io import BytesIO
+
+def extraer_texto_pdf(data: bytes) -> str:
+    texto = ""
+    with pdfplumber.open(BytesIO(data)) as pdf:
+        for page in pdf.pages:
+            texto += page.extract_text() or ""
+    return texto
+
+def extraer_texto_docx(data: bytes) -> str:
+    doc = Document(BytesIO(data))
+    return "\n".join(p.text for p in doc.paragraphs)
 
 # 1. Configura tu IA (Asegúrate de poner tu API Key real aquí)
 api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel('gemini-2.5-flash-lite')
+model = genai.GenerativeModel(model_name='gemini-2.5-flash-lite',
+
 generation_config={"temperature": 0.7},
-system_instruction=(
+system_instruction=
         """
-    Eres un asistente de oficina que habla estrictamente en ESPAÑOL. 
-    Tu tarea es analizar archivos Word, Excel, PDF e imágenes.
-    REGLA DE ORO: Todas tus respuestas deben ser en ESPAÑOL, sin excepciones. 
-    Si el usuario te envía un documento, léelo y resume su contenido en castellano.
-    """
+Eres un asistente general en español.
+Puedes responder preguntas, explicar conceptos y analizar documentos.
+
+REGLAS:
+- Responde siempre en ESPAÑOL.
+- Si el usuario adjunta un documento, úsalo como CONTEXTO para responder.
+- No resumas documentos automáticamente, a menos que el usuario lo solicite.
+- Si la pregunta se refiere al contenido del documento, apóyate en él.
+-si no hay documento, responde correctamente la pregunta que te realicen
+"""
     )
 
 app = FastAPI()
@@ -35,28 +55,48 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None)):
     try:
-        # 1. Leemos los bytes primero
-        if archivo:
-            doc_data = await archivo.read()
-            # 2. Creamos la lista de partes para Gemini
-            # Pasamos el mime_type real que detecta FastAPI
-            contenido = [
-                texto, 
-                {"mime_type": archivo.content_type, "data": doc_data}
-            ]
-        else:
-            contenido = [texto]
+        texto_documento = ""
 
-        # 3. Llamada al modelo
-        response = model.generate_content(contenido)
-        
-        if not response.text:
-            return {"respuesta": "La IA recibió el archivo pero no pudo generar texto. Intenta con un archivo más pequeño."}
-            
+        if archivo:
+            data = await archivo.read()
+            mime = archivo.content_type
+
+            if mime == "application/pdf":
+                texto_documento = extraer_texto_pdf(data)
+
+            elif mime in [
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/msword"
+            ]:
+                texto_documento = extraer_texto_docx(data)
+
+            elif mime.startswith("image/"):
+                # IMÁGENES: sí se envían directo
+                contenido = [
+                    texto,
+                    {"mime_type": mime, "data": data}
+                ]
+                response = model.generate_content(contenido)
+                return {"respuesta": response.text}
+
+            else:
+                raise HTTPException(status_code=400, detail="Tipo de archivo no soportado")
+
+        # DOCUMENTOS → TEXTO
+        prompt = f"""
+        {texto}
+
+        CONTENIDO DEL DOCUMENTO:
+        {texto_documento[:8000]}
+        """
+
+        response = model.generate_content(prompt)
+
         return {"respuesta": response.text}
+
     except Exception as e:
-        print(f"Error: {e}")
-        return {"respuesta": "Error procesando el documento. Asegúrate de que no esté protegido con contraseña."}
+        print("ERROR:", e)
+        return {"respuesta": "No pude procesar el documento. Puede estar escaneado o dañado."}
 
 @app.get("/")
 def home():
