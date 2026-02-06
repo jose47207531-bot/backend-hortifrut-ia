@@ -8,6 +8,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 import pdfplumber
 from docx import Document
 from io import BytesIO
+import uvicorn
 
 def extraer_texto_pdf(data: bytes) -> str:
     texto = ""
@@ -71,7 +72,6 @@ async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None
                 texto_documento = extraer_texto_docx(data)
 
             elif mime.startswith("image/"):
-                # IMÁGENES: sí se envían directo
                 contenido = [
                     texto,
                     {"mime_type": mime, "data": data}
@@ -82,22 +82,30 @@ async def chat(texto: str = Form(...), archivo: Optional[UploadFile] = File(None
             else:
                 raise HTTPException(status_code=400, detail="Tipo de archivo no soportado")
 
-        # DOCUMENTOS → TEXTO
-        prompt = f"""
-        {texto}
+        if texto_documento.strip():
+            prompt = f"""
+PREGUNTA:
+{texto}
 
-        CONTENIDO DEL DOCUMENTO:
-        {texto_documento[:8000]}
-        """
+DOCUMENTO:
+{texto_documento[:8000]}
+"""
+        else:
+            prompt = texto
 
         response = model.generate_content(prompt)
-
         return {"respuesta": response.text}
 
     except Exception as e:
         print("ERROR:", e)
         return {"respuesta": "No pude procesar el documento. Puede estar escaneado o dañado."}
-
 @app.get("/")
 def home():
     return {"status": "Servidor de IA Activo"}
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000))
+    )
