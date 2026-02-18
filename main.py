@@ -10,6 +10,7 @@ from docx import Document
 from io import BytesIO
 import uvicorn
 import requests
+from fastapi import Request
 
 
 # ===============================
@@ -139,6 +140,31 @@ app.add_middleware(
 # ===============================
 # ENDPOINTS
 # ===============================
+# ===============================
+# ENDPOINT PARA WEBHOOK (PASO 1)
+# ===============================
+
+@app.post("/webhook/jotform")
+async def recibir_webhook(request: Request):
+    try:
+        # 1. Recibir los datos del formulario
+        form_data = await request.form()
+        datos = dict(form_data)
+        
+        # 2. Imprimir en los logs de Render para verificar
+        print(f"Nueva entrada recibida de: {datos.get('formTitle', 'Formulario Desconocido')}")
+        
+        # 3. (Opcional) Guardar en un archivo local para que Gemini lo lea luego
+        # Nota: En Render, los archivos locales se borran al reiniciar. 
+        # Esto es solo para probar la conexión.
+        with open("consolidado.txt", "a") as f:
+            f.write(f"\nORDEN: {datos.get('control_id', 'S/N')} | DATOS: {datos}\n")
+
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Error en Webhook: {e}")
+        return {"status": "error", "message": str(e)}
+    
 
 @app.get("/")
 def home():
@@ -223,5 +249,4 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000))
-    )
+        port=int(os.environ.get("PORT", 8000)))
