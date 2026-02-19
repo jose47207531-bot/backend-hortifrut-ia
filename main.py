@@ -10,6 +10,9 @@ import uvicorn
 import requests
 import pandas as pd
 import io
+import pytesseract
+from PIL import Image
+import docx
 
 # ===============================
 # CONFIGURACIÓN GOOGLE SHEET
