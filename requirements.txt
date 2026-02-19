@@ -7,3 +7,6 @@ google-generativeai==0.8.3
 python-docx
 pdfplumber
 pandas
+openpyxl
+pillow
+pytesseract
