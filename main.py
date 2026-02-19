@@ -1,33 +1,108 @@
 import google.generativeai as genai
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import pandas as pd
-import requests
 from typing import Optional
+import os
 import pdfplumber
-import docx
-from PIL import Image
-import pytesseract
+from docx import Document
+from io import BytesIO
+import uvicorn
+import requests
+import pandas as pd
 import io
 
 # ===============================
-# CONFIG GEMINI
+# CONFIGURACIÓN GOOGLE SHEET
+# ===============================
+
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8/export?format=csv&gid=1960130423"
+
+def obtener_mantenimientos_google_sheet(busqueda: str = "") -> str:
+    try:
+        response = requests.get(GOOGLE_SHEET_CSV_URL)
+        response.raise_for_status()
+
+        df_total = pd.read_csv(io.StringIO(response.text))
+
+        if df_total.empty:
+            return ""
+
+        # 🔎 Filtrar por números si el usuario menciona alguno
+        if any(char.isdigit() for char in busqueda):
+            palabras = busqueda.split()
+            for p in palabras:
+                if p.isdigit():
+                    filtro = df_total.astype(str).apply(
+                        lambda x: x.str.contains(p, case=False)
+                    ).any(axis=1)
+                    df_total = df_total[filtro]
+
+        return df_total.tail(15).to_string(index=False)
+
+    except Exception as e:
+        print("Error leyendo Google Sheets:", e)
+        return ""
+
+# ===============================
+# UTILIDADES DOCUMENTOS
+# ===============================
+
+def extraer_texto_pdf(data: bytes) -> str:
+    texto = ""
+    with pdfplumber.open(BytesIO(data)) as pdf:
+        for page in pdf.pages:
+            texto += page.extract_text() or ""
+    return texto
+
+def extraer_texto_docx(data: bytes) -> str:
+    doc = Document(BytesIO(data))
+    return "\n".join(p.text for p in doc.paragraphs)
+
+# ===============================
+# FILTRO PARA USAR GOOGLE SHEET
+# ===============================
+
+def requiere_jotform(texto: str) -> bool:
+    texto = texto.lower()
+
+    palabras_clave = [
+        "mantenimiento",
+        "último mantenimiento",
+        "ultimo mantenimiento",
+        "repuesto",
+        "repuestos",
+        "falla",
+        "fallas",
+        "equipo",
+        "máquina",
+        "maquina",
+        "inspección",
+        "inspeccion",
+        "orden",
+        "orden de trabajo",
+        "registro",
+        "formulario"
+    ]
+
+    return any(p in texto for p in palabras_clave)
+
+# ===============================
+# IA GEMINI
 # ===============================
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash-lite",
-    generation_config={"temperature": 0.3},
+    generation_config={"temperature": 0.7},
     system_instruction="""
-Eres un asistente empresarial experto en mantenimiento industrial.
+Eres un asistente general en español.
 
-Reglas:
-- Responde siempre en español.
-- Usa los datos estructurados cuando existan.
-- Si no hay datos suficientes, dilo claramente.
-- Si es pregunta gerencial, responde con enfoque ejecutivo.
+REGLAS:
+- Responde siempre en ESPAÑOL.
+- Si el usuario adjunta un documento, úsalo como CONTEXTO.
+- Si la pregunta es sobre mantenimiento y hay datos del Sheet, úsalos.
+- Si no hay información suficiente, dilo claramente.
 """
 )
 
@@ -45,190 +120,77 @@ app.add_middleware(
 )
 
 # ===============================
-# CONFIG GOOGLE SHEETS
+# ENDPOINTS
 # ===============================
 
-SPREADSHEET_ID = "1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8"
-
-SHEETS = {
-    "OM GENERAL": 628280434,
-    "DATOS COMPARTIDOS": 1885887150,
-    "OMAISLAMIENTO": 743572316,
-    "OMAIRESACONDICIONADOS": 396018642,
-    "OMPAT": 328411278,
-    "OMVNH3": 1394368478,
-    "OMCOMEDORES": 1186193865,
-    "OMGEE": 1304531883,
-    "OMIRM": 190759305,
-    "OMTRANSPALETA1": 580356100,
-}
-
-def cargar_sheet(nombre):
-    gid = SHEETS[nombre]
-    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv&gid={gid}"
-    try:
-        df = pd.read_csv(url)
-        df.columns = df.columns.str.strip()
-        return df
-    except:
-        return pd.DataFrame()
-
-# ===============================
-# INTENCIONES EMPRESARIALES
-# ===============================
-
-PALABRAS_CONTEO = ["cuántos", "cuantos", "cantidad", "total", "numero"]
-PALABRAS_LISTAR = ["mostrar", "listar", "detalle", "ver"]
-PALABRAS_ULTIMO = ["último", "ultima", "reciente"]
-PALABRAS_GERENCIA = [
-    "kpi", "indicador", "eficiencia",
-    "retrabajo", "tiempo promedio",
-    "horas totales", "estadística"
-]
-
-def detectar_intencion(texto):
-    texto = texto.lower()
-
-    if any(p in texto for p in PALABRAS_GERENCIA):
-        return "gerencia"
-    if any(p in texto for p in PALABRAS_CONTEO):
-        return "conteo"
-    if any(p in texto for p in PALABRAS_LISTAR):
-        return "listar"
-    if any(p in texto for p in PALABRAS_ULTIMO):
-        return "ultimo"
-
-    return "desconocido"
-
-def detectar_sheet(texto):
-    texto = texto.lower()
-    for nombre in SHEETS.keys():
-        if nombre.lower().replace("om", "") in texto:
-            return nombre
-    if "nh3" in texto:
-        return "OMVNH3"
-    if "transpaleta" in texto:
-        return "OMTRANSPALETA1"
-    return None
-
-def detectar_filtros(texto, df):
-    texto = texto.lower()
-    filtros = {}
-
-    for columna in df.columns:
-        valores = df[columna].astype(str).str.lower().unique()
-        for v in valores:
-            if v and len(v) > 3 and v in texto:
-                filtros[columna] = v
-
-    return filtros
-
-# ===============================
-# MOTOR DE REGLAS AVANZADO
-# ===============================
-
-def motor_reglas(texto):
-
-    sheet_detectado = detectar_sheet(texto)
-
-    if not sheet_detectado:
-        return None
-
-    df = cargar_sheet(sheet_detectado)
-
-    if df.empty:
-        return "No se pudo cargar información de la base."
-
-    intencion = detectar_intencion(texto)
-    filtros = detectar_filtros(texto, df)
-
-    df_filtrado = df.copy()
-
-    for col, val in filtros.items():
-        df_filtrado = df_filtrado[df_filtrado[col].astype(str).str.lower() == val]
-
-    if df_filtrado.empty:
-        return "No se encontraron registros con esos criterios."
-
-    # ================= GERENCIA =================
-    if intencion == "gerencia":
-
-        total = len(df)
-        retrabajos = 0
-
-        if "RE-TRABAJO?" in df.columns:
-            retrabajos = df[df["RE-TRABAJO?"].astype(str).str.upper() == "SI"].shape[0]
-
-        horas = 0
-        if "TIEMPO TOTAL DE EJECUCIÓN" in df.columns:
-            horas = pd.to_numeric(df["TIEMPO TOTAL DE EJECUCIÓN"], errors="coerce").sum()
-
-        return f"""
-📊 REPORTE EJECUTIVO – {sheet_detectado}
-
-Total Órdenes: {total}
-Retrabajos: {retrabajos}
-Horas Totales Ejecutadas: {round(horas,2)}
-
-Nivel de Retrabajo: {round((retrabajos/total)*100,2) if total>0 else 0} %
-"""
-
-    # ================= CONTEO =================
-    if intencion == "conteo":
-        return f"Hay {len(df_filtrado)} registros en {sheet_detectado} que cumplen el criterio."
-
-    # ================= ULTIMO =================
-    if intencion == "ultimo":
-        if "FECHA PROGRAMADA" in df.columns:
-            df_filtrado["FECHA PROGRAMADA"] = pd.to_datetime(df_filtrado["FECHA PROGRAMADA"], errors="coerce")
-            df_filtrado = df_filtrado.sort_values("FECHA PROGRAMADA", ascending=False)
-        return df_filtrado.head(1).to_string(index=False)
-
-    # ================= LISTAR =================
-    if intencion == "listar":
-        return df_filtrado.head(10).to_string(index=False)
-
-    return df_filtrado.head(5).to_string(index=False)
-
-# ===============================
-# ENDPOINT PRINCIPAL
-# ===============================
+@app.get("/")
+def home():
+    return {"status": "Servidor IA Activo"}
 
 @app.post("/chat")
-async def chat(texto: str = Form(...)):
+async def chat(
+    texto: str = Form(...),
+    archivo: Optional[UploadFile] = File(None)
+):
+    try:
+        texto_documento = ""
+        contexto_sheet = ""
 
-    # 1️⃣ Intentar reglas
-    resultado = motor_reglas(texto)
+        # 1️⃣ DOCUMENTOS
+        if archivo:
+            data = await archivo.read()
+            mime = archivo.content_type
 
-    if resultado:
-        return {"respuesta": resultado}
+            if mime == "application/pdf":
+                texto_documento = extraer_texto_pdf(data)
 
-    # 2️⃣ Fallback IA con contexto multi-sheet
-    contexto_total = ""
+            elif mime in [
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/msword"
+            ]:
+                texto_documento = extraer_texto_docx(data)
 
-    for nombre in SHEETS.keys():
-        df = cargar_sheet(nombre)
-        if not df.empty:
-            contexto_total += f"\n\n=== {nombre} ===\n"
-            contexto_total += df.head(20).to_string(index=False)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Tipo de archivo no soportado"
+                )
 
-    prompt = f"""
-Pregunta del usuario:
+        # 2️⃣ GOOGLE SHEET SOLO SI ES NECESARIO
+        if not texto_documento.strip() and requiere_jotform(texto):
+            contexto_sheet = obtener_mantenimientos_google_sheet(texto)
+
+        # 3️⃣ CONSTRUCCIÓN DEL PROMPT
+        if texto_documento.strip():
+            prompt = f"""
+PREGUNTA:
 {texto}
 
-Datos disponibles:
-{contexto_total}
+DOCUMENTO:
+{texto_documento}
 """
+        elif contexto_sheet.strip():
+            prompt = f"""
+REGISTROS REALES DE MANTENIMIENTO:
+{contexto_sheet}
 
-    try:
+Con base SOLO en esta información responde:
+{texto}
+"""
+        else:
+            prompt = texto
+
+        # 4️⃣ RESPUESTA GEMINI
         response = model.generate_content(prompt)
+
         return {"respuesta": response.text}
+
     except Exception as e:
         print("ERROR:", e)
-        return {"respuesta": "Error procesando la solicitud."}
+        return {"respuesta": "Ocurrió un error procesando la información."}
 
 # ===============================
-# LECTURA DE ARCHIVOS
+# MAIN
 # ===============================
 
 @app.post("/leer-archivo")
