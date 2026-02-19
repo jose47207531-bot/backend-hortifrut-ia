@@ -1,17 +1,47 @@
 import google.generativeai as genai
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import os
-from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+import os
 import pdfplumber
 from docx import Document
 from io import BytesIO
 import uvicorn
 import requests
-from fastapi import Request
+import pandas as pd
+import io
 
+# ===============================
+# CONFIGURACIÓN GOOGLE SHEET
+# ===============================
+
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8/export?format=csv&gid=1960130423"
+
+def obtener_mantenimientos_google_sheet(busqueda: str = "") -> str:
+    try:
+        response = requests.get(GOOGLE_SHEET_CSV_URL)
+        response.raise_for_status()
+
+        df_total = pd.read_csv(io.StringIO(response.text))
+
+        if df_total.empty:
+            return ""
+
+        # 🔎 Filtrar por números si el usuario menciona alguno
+        if any(char.isdigit() for char in busqueda):
+            palabras = busqueda.split()
+            for p in palabras:
+                if p.isdigit():
+                    filtro = df_total.astype(str).apply(
+                        lambda x: x.str.contains(p, case=False)
+                    ).any(axis=1)
+                    df_total = df_total[filtro]
+
+        return df_total.tail(15).to_string(index=False)
+
+    except Exception as e:
+        print("Error leyendo Google Sheets:", e)
+        return ""
 
 # ===============================
 # UTILIDADES DOCUMENTOS
@@ -24,14 +54,12 @@ def extraer_texto_pdf(data: bytes) -> str:
             texto += page.extract_text() or ""
     return texto
 
-
 def extraer_texto_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
-
 # ===============================
-# FILTRO PARA USAR JOTFORM
+# FILTRO PARA USAR GOOGLE SHEET
 # ===============================
 
 def requiere_jotform(texto: str) -> bool:
@@ -50,59 +78,13 @@ def requiere_jotform(texto: str) -> bool:
         "maquina",
         "inspección",
         "inspeccion",
+        "orden",
         "orden de trabajo",
         "registro",
         "formulario"
     ]
 
     return any(p in texto for p in palabras_clave)
-
-
-# ===============================
-# JOTFORM
-# ===============================
-
-def obtener_forms_jotform():
-    r = requests.get(
-        "https://api.jotform.com/user/forms",
-        headers={"APIKEY": os.getenv("JOTFORM_API_KEY")},
-        timeout=10
-    )
-    data = r.json()
-    return data.get("content", [])
-
-
-def obtener_mantenimientos_todos_forms(max_forms=5, limit_por_form=3):
-    forms = obtener_forms_jotform()[:max_forms]
-    headers = {"APIKEY": os.getenv("JOTFORM_API_KEY")}
-
-    contexto = ""
-
-    for form in forms:
-        form_id = form.get("id")
-        form_title = form.get("title", "Formulario sin nombre")
-
-        url = (
-            f"https://api.jotform.com/form/{form_id}/submissions"
-            f"?limit={limit_por_form}&orderby=created_at"
-        )
-
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-
-        if "content" not in data or not data["content"]:
-            continue
-
-        contexto += f"\n===== FORMULARIO: {form_title} =====\n"
-
-        for sub in data["content"]:
-            for ans in sub.get("answers", {}).values():
-                pregunta = ans.get("text", "")
-                respuesta = ans.get("answer", "")
-                contexto += f"{pregunta}: {respuesta}\n"
-
-    return contexto.strip()
-
 
 # ===============================
 # IA GEMINI
@@ -119,7 +101,7 @@ Eres un asistente general en español.
 REGLAS:
 - Responde siempre en ESPAÑOL.
 - Si el usuario adjunta un documento, úsalo como CONTEXTO.
-- Si la pregunta es sobre mantenimiento y hay datos, úsalos.
+- Si la pregunta es sobre mantenimiento y hay datos del Sheet, úsalos.
 - Si no hay información suficiente, dilo claramente.
 """
 )
@@ -140,45 +122,10 @@ app.add_middleware(
 # ===============================
 # ENDPOINTS
 # ===============================
-# ===============================
-# ENDPOINT PARA WEBHOOK (PASO 1)
-# ===============================
-
-@app.post("/webhook/jotform")
-async def recibir_webhook(request: Request):
-    try:
-        # 1. Recibir los datos del formulario
-        form_data = await request.form()
-        datos = dict(form_data)
-        
-        # 2. Imprimir en los logs de Render para verificar
-        print(f"Nueva entrada recibida de: {datos.get('formTitle', 'Formulario Desconocido')}")
-        
-        # 3. (Opcional) Guardar en un archivo local para que Gemini lo lea luego
-        # Nota: En Render, los archivos locales se borran al reiniciar. 
-        # Esto es solo para probar la conexión.
-        with open("consolidado.txt", "a") as f:
-            f.write(f"\nORDEN: {datos.get('control_id', 'S/N')} | DATOS: {datos}\n")
-
-        return {"status": "success"}
-    except Exception as e:
-        print(f"Error en Webhook: {e}")
-        return {"status": "error", "message": str(e)}
-    
 
 @app.get("/")
 def home():
-    return {"status": "Servidor de IA Activo"}
-
-
-@app.get("/jotform/ping")
-def jotform_ping():
-    r = requests.get(
-        "https://api.jotform.com/user",
-        headers={"APIKEY": os.getenv("JOTFORM_API_KEY")}
-    )
-    return r.json()
-
+    return {"status": "Servidor IA Activo"}
 
 @app.post("/chat")
 async def chat(
@@ -187,7 +134,7 @@ async def chat(
 ):
     try:
         texto_documento = ""
-        contexto_jotform = ""
+        contexto_sheet = ""
 
         # 1️⃣ DOCUMENTOS
         if archivo:
@@ -209,11 +156,11 @@ async def chat(
                     detail="Tipo de archivo no soportado"
                 )
 
-        # 2️⃣ JOTFORM SOLO SI ES NECESARIO
+        # 2️⃣ GOOGLE SHEET SOLO SI ES NECESARIO
         if not texto_documento.strip() and requiere_jotform(texto):
-            contexto_jotform = obtener_mantenimientos_todos_forms()
+            contexto_sheet = obtener_mantenimientos_google_sheet(texto)
 
-        # 3️⃣ PROMPT
+        # 3️⃣ CONSTRUCCIÓN DEL PROMPT
         if texto_documento.strip():
             prompt = f"""
 PREGUNTA:
@@ -222,10 +169,10 @@ PREGUNTA:
 DOCUMENTO:
 {texto_documento}
 """
-        elif contexto_jotform.strip():
+        elif contexto_sheet.strip():
             prompt = f"""
 REGISTROS REALES DE MANTENIMIENTO:
-{contexto_jotform}
+{contexto_sheet}
 
 Con base SOLO en esta información responde:
 {texto}
@@ -233,13 +180,14 @@ Con base SOLO en esta información responde:
         else:
             prompt = texto
 
+        # 4️⃣ RESPUESTA GEMINI
         response = model.generate_content(prompt)
+
         return {"respuesta": response.text}
 
     except Exception as e:
         print("ERROR:", e)
         return {"respuesta": "Ocurrió un error procesando la información."}
-
 
 # ===============================
 # MAIN
