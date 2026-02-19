@@ -18,7 +18,7 @@ import io
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
+    model_name="gemini-2.5-flash-lite",
     generation_config={"temperature": 0.3},
     system_instruction="""
 Eres un asistente empresarial experto en mantenimiento industrial.
