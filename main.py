@@ -20,7 +20,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash", # Más económico para tareas empresariales
+    model_name="gemini-2.5-flash", # Más económico para tareas empresariales
     generation_config={"temperature": 0.2},
     system_instruction="Eres un asistente de mantenimiento. Usa el contexto de los archivos y el Excel para responder de forma técnica y breve."
 )
