@@ -73,9 +73,12 @@ def normalizar_texto(texto):
     return texto
 
 def buscar_texto_libre(df, consulta):
+    # 1. Limpiamos los valores nulos del DataFrame para evitar errores de tipo
+    df = df.fillna("") 
+    
     consulta_norm = normalizar_texto(consulta)
 
-    # eliminar palabras irrelevantes
+    # Eliminar palabras irrelevantes
     stopwords = [
         "el","la","los","las","un","una","unos","unas",
         "de","del","en","y","o","a","que","hubo","hay",
@@ -91,9 +94,10 @@ def buscar_texto_libre(df, consulta):
         return pd.DataFrame()
 
     def fila_coincide(fila):
-        texto_fila = normalizar_texto(" ".join(fila.astype(str)))
+        # Convertimos toda la fila a string y manejamos posibles errores
+        texto_fila = normalizar_texto(" ".join(fila.values.astype(str)))
         coincidencias = sum(1 for palabra in palabras if palabra in texto_fila)
-        return coincidencias >= 1  # con 1 coincidencia ya es válido
+        return coincidencias >= 1
 
     filtro = df.apply(fila_coincide, axis=1)
     return df[filtro]
