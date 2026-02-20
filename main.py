@@ -1,7 +1,6 @@
 import google.generativeai as genai
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from typing import Optional
 import os
 import pdfplumber
@@ -14,14 +13,14 @@ import pytesseract
 from PIL import Image
 from collections import defaultdict
 
-# ===============================
-# VALIDAR API KEY
-# ===============================
+# ==========================================
+# CONFIGURACIÓN GEMINI
+# ==========================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    raise ValueError("❌ No se encontró GEMINI_API_KEY en variables de entorno")
+    raise ValueError("❌ No se encontró GEMINI_API_KEY en Render")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -35,12 +34,13 @@ Reglas:
 - Responde siempre en español.
 - Usa datos estructurados si existen.
 - Si no hay datos suficientes, dilo claramente.
+- Sé claro y profesional.
 """
 )
 
-# ===============================
+# ==========================================
 # FASTAPI
-# ===============================
+# ==========================================
 
 app = FastAPI()
 
@@ -51,17 +51,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===============================
-# MEMORIA
-# ===============================
+# ==========================================
+# MEMORIA CONVERSACIONAL
+# ==========================================
 
 memoria_conversacion = defaultdict(list)
 
-# ===============================
+# ==========================================
 # GOOGLE SHEET
-# ===============================
+# ==========================================
 
-GOOGLE_SHEET_CSV_URL = "TU_LINK_REAL_AQUI"
+GOOGLE_SHEET_CSV_URL = "PEGA_AQUI_TU_LINK_CSV_REAL"
 
 def buscar_texto_libre(df, consulta):
     palabras = consulta.lower().split()
@@ -76,7 +76,7 @@ def buscar_texto_libre(df, consulta):
 
     return df[filtro]
 
-def obtener_mantenimientos_google_sheet(busqueda: str = "") -> str:
+def obtener_datos_sheet(busqueda: str = "") -> str:
     try:
         response = requests.get(GOOGLE_SHEET_CSV_URL)
         response.raise_for_status()
@@ -94,12 +94,9 @@ def obtener_mantenimientos_google_sheet(busqueda: str = "") -> str:
         columnas_clave = [
             col for col in df.columns
             if any(k in col.lower() for k in [
-                "orden",
-                "descripcion",
-                "observacion",
-                "responsable",
-                "fecha",
-                "trabajo"
+                "orden", "descripcion", "observacion",
+                "responsable", "fecha", "trabajo",
+                "equipo", "estado"
             ])
         ]
 
@@ -109,12 +106,20 @@ def obtener_mantenimientos_google_sheet(busqueda: str = "") -> str:
         return df_filtrado.head(5).to_string(index=False)
 
     except Exception as e:
-        print("❌ Error leyendo Google Sheets:", e)
+        print("❌ Error leyendo Google Sheet:", e)
         return ""
 
-# ===============================
+def requiere_sheet(texto: str) -> bool:
+    palabras = [
+        "mantenimiento", "orden", "repuesto",
+        "falla", "equipo", "registro",
+        "inspección", "trabajo", "estado"
+    ]
+    return any(p in texto.lower() for p in palabras)
+
+# ==========================================
 # DOCUMENTOS
-# ===============================
+# ==========================================
 
 def extraer_texto_pdf(data: bytes) -> str:
     texto = ""
@@ -127,101 +132,59 @@ def extraer_texto_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
-# ===============================
-# FILTRO SHEET
-# ===============================
-
-def requiere_sheet(texto: str) -> bool:
-    palabras = [
-        "mantenimiento", "orden", "repuesto",
-        "falla", "equipo", "registro",
-        "inspección", "trabajo"
-    ]
-    return any(p in texto.lower() for p in palabras)
-
-# ===============================
-# MODELO JSON (para evitar 422)
-# ===============================
-
-class ChatJSON(BaseModel):
-    session_id: str
-    texto: str
-
-# ===============================
-# ENDPOINT CHAT (ACEPTA JSON Y FORM)
-# ===============================
+# ==========================================
+# ENDPOINT CHAT UNIVERSAL
+# ==========================================
 
 @app.post("/chat")
-async def chat(
-    request: Request,
-    session_id: Optional[str] = Form(None),
-    texto: Optional[str] = Form(None),
-    archivo: Optional[UploadFile] = File(None)
-):
+async def chat(request: Request):
 
     try:
-        # Si viene JSON
-        if request.headers.get("content-type", "").startswith("application/json"):
+        content_type = request.headers.get("content-type", "")
+        session_id = "default_session"
+        texto = None
+        archivo = None
+
+        # JSON
+        if content_type.startswith("application/json"):
             body = await request.json()
-            session_id = body.get("session_id")
-            texto = body.get("texto")
+            session_id = body.get("session_id", "default_session")
+            texto = body.get("texto") or body.get("mensaje") or body.get("pregunta")
 
-        if not session_id or not texto:
-            raise HTTPException(status_code=422, detail="Faltan campos session_id o texto")
+        # FORM DATA
+        elif "multipart/form-data" in content_type:
+            form = await request.form()
+            session_id = form.get("session_id", "default_session")
+            texto = form.get("texto") or form.get("mensaje") or form.get("pregunta")
+            archivo = form.get("archivo")
 
-        print("📩 Mensaje recibido:", texto)
+        if not texto:
+            return {"respuesta": "No se recibió ningún mensaje válido."}
+
+        print("📩 Texto recibido:", texto)
 
         texto_documento = ""
         contexto_sheet = ""
 
-        # DOCUMENTO
-        if archivo:
-            data = await archivo.read()
-            mime = archivo.content_type
+        # Google Sheet inteligente
+        if requiere_sheet(texto):
+            contexto_sheet = obtener_datos_sheet(texto)
 
-            if mime == "application/pdf":
-                texto_documento = extraer_texto_pdf(data)
-
-            elif mime in [
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/msword"
-            ]:
-                texto_documento = extraer_texto_docx(data)
-
-            elif mime.startswith("image/"):
-                image = Image.open(BytesIO(data))
-                texto_documento = pytesseract.image_to_string(image)
-
-        # GOOGLE SHEET
-        if not texto_documento and requiere_sheet(texto):
-            contexto_sheet = obtener_mantenimientos_google_sheet(texto)
-
-        # MEMORIA
+        # Memoria corta
         historial = memoria_conversacion[session_id]
         contexto_memoria = ""
 
         for h in historial[-3:]:
             contexto_memoria += f"\nUsuario: {h['usuario']}\nAsistente: {h['asistente']}\n"
 
-        # CONSTRUIR PROMPT
+        # Construcción del prompt
         if contexto_sheet:
             prompt = f"""
 CONVERSACIÓN PREVIA:
 {contexto_memoria}
 
-REGISTROS REALES:
+REGISTROS EMPRESARIALES:
 {contexto_sheet}
-
-Pregunta:
-{texto}
-"""
-        elif texto_documento:
-            prompt = f"""
-CONVERSACIÓN PREVIA:
-{contexto_memoria}
-
-DOCUMENTO:
-{texto_documento}
 
 Pregunta:
 {texto}
@@ -235,7 +198,6 @@ Pregunta:
 {texto}
 """
 
-        # RESPUESTA GEMINI
         response = model.generate_content(prompt)
         respuesta_texto = response.text
 
@@ -250,9 +212,9 @@ Pregunta:
         print("🔥 ERROR:", e)
         return {"respuesta": "Error procesando la solicitud."}
 
-# ===============================
+# ==========================================
 # HOME
-# ===============================
+# ==========================================
 
 @app.get("/")
 def home():
