@@ -1,247 +1,138 @@
 import google.generativeai as genai
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
+from collections import defaultdict
 import os
-import pdfplumber
-from docx import Document
-from io import BytesIO
-import requests
 import pandas as pd
 import io
-import pytesseract
-from PIL import Image
-from collections import defaultdict
+import requests
 import unicodedata
 import re
+import time
+import pdfplumber
+from docx import Document
 
 # ==========================================
-# CONFIGURACIÓN GEMINI
+# CONFIGURACIÓN
 # ==========================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not GEMINI_API_KEY:
-    raise ValueError("❌ No se encontró GEMINI_API_KEY en Render")
-
 genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash-lite",
-    generation_config={"temperature": 0.4},
-    system_instruction="""
-Eres un asistente empresarial especializado en mantenimiento industrial.
-
-Reglas:
-- Responde siempre en español.
-- Usa datos estructurados si existen.
-- Si no hay datos suficientes, dilo claramente.
-- Sé claro y profesional.
-"""
+    model_name="gemini-1.5-flash", # Más económico para tareas empresariales
+    generation_config={"temperature": 0.2},
+    system_instruction="Eres un asistente de mantenimiento. Usa el contexto de los archivos y el Excel para responder de forma técnica y breve."
 )
-
-# ==========================================
-# FASTAPI
-# ==========================================
 
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ==========================================
-# MEMORIA CONVERSACIONAL
-# ==========================================
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 memoria_conversacion = defaultdict(list)
-
-# ==========================================
-# GOOGLE SHEET
-# ==========================================
-
+cache_excel = {"df": None, "last_update": 0}
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8/export?format=csv&gid=1960130423"
 
-def normalizar_texto(texto):
-    texto = texto.lower()
-    texto = unicodedata.normalize("NFD", texto)
-    texto = texto.encode("ascii", "ignore").decode("utf-8")
-    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
-    return texto
+# ==========================================
+# EXTRACTORES LOCALES (Para ahorrar tokens)
+# ==========================================
 
-def buscar_texto_libre(df, consulta):
-    # 1. Limpiamos los valores nulos del DataFrame para evitar errores de tipo
-    df = df.fillna("") 
-    
-    consulta_norm = normalizar_texto(consulta)
+def extraer_de_pdf(bytes_file):
+    with pdfplumber.open(io.BytesIO(bytes_file)) as pdf:
+        return "\n".join([page.extract_text() or "" for page in pdf.pages])
 
-    # Eliminar palabras irrelevantes
-    stopwords = [
-        "el","la","los","las","un","una","unos","unas",
-        "de","del","en","y","o","a","que","hubo","hay",
-        "alguno","alguna","algun","trabajo","linea","lineas"
-    ]
+def extraer_de_docx(bytes_file):
+    doc = Document(io.BytesIO(bytes_file))
+    return "\n".join([p.text for p in doc.paragraphs])
 
-    palabras = [
-        p for p in consulta_norm.split()
-        if p not in stopwords and len(p) > 2
-    ]
+def extraer_de_excel_adjunto(bytes_file):
+    df = pd.read_excel(io.BytesIO(bytes_file))
+    return df.head(20).to_markdown(index=False) # Solo enviamos una muestra para ahorrar
 
-    if not palabras:
-        return pd.DataFrame()
+# ==========================================
+# LÓGICA DE BÚSQUEDA EN GOOGLE SHEET
+# ==========================================
 
-    def fila_coincide(fila):
-        # Convertimos toda la fila a string y manejamos posibles errores
-        texto_fila = normalizar_texto(" ".join(fila.values.astype(str)))
-        coincidencias = sum(1 for palabra in palabras if palabra in texto_fila)
-        return coincidencias >= 1
+def normalizar(t):
+    if not t: return ""
+    return unicodedata.normalize("NFD", t.lower()).encode("ascii", "ignore").decode("utf-8")
 
-    filtro = df.apply(fila_coincide, axis=1)
-    return df[filtro]
-
-def obtener_datos_sheet(busqueda: str = "") -> str:
+def buscar_en_sheet(query, historial=""):
+    global cache_excel
     try:
-        response = requests.get(GOOGLE_SHEET_CSV_URL)
-        response.raise_for_status()
-
-        df = pd.read_csv(io.StringIO(response.text))
-
-        if df.empty:
-            return ""
-
-        df_filtrado = buscar_texto_libre(df, busqueda)
-
-        if df_filtrado.empty:
-            return ""
-
-        columnas_clave = [
-            col for col in df.columns
-            if any(k in col.lower() for k in [
-                "orden", "descripcion", "observacion",
-                "responsable", "fecha", "trabajo",
-                "equipo", "estado"
-            ])
-        ]
-
-        if columnas_clave:
-            df_filtrado = df_filtrado[columnas_clave]
-
-        return df_filtrado.head(5).to_string(index=False)
-
-    except Exception as e:
-        print("❌ Error leyendo Google Sheet:", e)
-        return ""
-
-def requiere_sheet(texto: str) -> bool:
-    palabras = [
-        "mantenimiento", "orden", "repuesto",
-        "falla", "equipo", "registro",
-        "inspección", "trabajo", "estado"
-    ]
-    return any(p in texto.lower() for p in palabras)
+        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+            cache_excel["df"] = pd.read_csv(io.StringIO(res.text)).fillna("")
+            cache_excel["last_update"] = time.time()
+        
+        df = cache_excel["df"]
+        terminos = [p for p in normalizar(f"{query} {historial}").split() if len(p) > 2]
+        
+        if not terminos: return ""
+        
+        # Búsqueda eficiente en todas las celdas
+        mask = df.apply(lambda row: any(t in normalizar(" ".join(row.astype(str))) for t in terminos), axis=1)
+        res_df = df[mask].head(5)
+        
+        columnas = [c for c in df.columns if any(k in c.lower() for k in ["orden", "desc", "obs", "resp", "equipo", "estado"])]
+        return res_df[columnas].to_markdown(index=False) if not res_df.empty else ""
+    except: return ""
 
 # ==========================================
-# DOCUMENTOS
-# ==========================================
-
-def extraer_texto_pdf(data: bytes) -> str:
-    texto = ""
-    with pdfplumber.open(BytesIO(data)) as pdf:
-        for page in pdf.pages:
-            texto += page.extract_text() or ""
-    return texto
-
-def extraer_texto_docx(data: bytes) -> str:
-    doc = Document(BytesIO(data))
-    return "\n".join(p.text for p in doc.paragraphs)
-
-# ==========================================
-# ENDPOINT CHAT UNIVERSAL
+# ENDPOINT PRINCIPAL
 # ==========================================
 
 @app.post("/chat")
-async def chat(request: Request):
-
+async def chat(
+    texto: str = Form(None),
+    session_id: str = Form("default_session"),
+    archivo: UploadFile = File(None)
+):
     try:
-        content_type = request.headers.get("content-type", "")
-        session_id = "default_session"
-        texto = None
-        archivo = None
+        texto_extraido = ""
+        mimetype = ""
+        
+        # 1. Procesar archivo localmente para no gastar tokens de imagen/multimedia si es texto
+        if archivo:
+            mimetype = archivo.content_type
+            bytes_file = await archivo.read()
+            
+            if "pdf" in mimetype:
+                texto_extraido = f"\n[Contenido del PDF adjunto]:\n{extraer_de_pdf(bytes_file)}"
+            elif "word" in mimetype or "officedocument.wordprocessingml" in mimetype:
+                texto_extraido = f"\n[Contenido del Word adjunto]:\n{extraer_de_docx(bytes_file)}"
+            elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
+                texto_extraido = f"\n[Contenido del Excel adjunto]:\n{extraer_de_excel_adjunto(bytes_file)}"
+            elif "image" in mimetype or "video" in mimetype:
+                # Si es imagen o video, no hay de otra: enviamos a Gemini para que use su visión
+                # Pero esto solo pasará con archivos visuales
+                input_data = [{"mime_type": mimetype, "data": bytes_file}, texto or "Analiza esto"]
+                response = model.generate_content(input_data)
+                return {"respuesta": response.text}
 
-        # JSON
-        if content_type.startswith("application/json"):
-            body = await request.json()
-            session_id = body.get("session_id", "default_session")
-            texto = body.get("texto") or body.get("mensaje") or body.get("pregunta")
-
-        # FORM DATA
-        elif "multipart/form-data" in content_type:
-            form = await request.form()
-            session_id = form.get("session_id", "default_session")
-            texto = form.get("texto") or form.get("mensaje") or form.get("pregunta")
-            archivo = form.get("archivo")
-
-        if not texto:
-            return {"respuesta": "No se recibió ningún mensaje válido."}
-
-        print("📩 Texto recibido:", texto)
-
-        texto_documento = ""
-        contexto_sheet = ""
-
-        # Google Sheet inteligente
-        if requiere_sheet(texto):
-            contexto_sheet = obtener_datos_sheet(texto)
-
-        # Memoria corta
+        # 2. Si no fue imagen/video, procesamos como texto (más barato)
         historial = memoria_conversacion[session_id]
-        contexto_memoria = ""
-
-        for h in historial[-3:]:
-            contexto_memoria += f"\nUsuario: {h['usuario']}\nAsistente: {h['asistente']}\n"
-
-        # Construcción del prompt
-        if contexto_sheet:
-            prompt = f"""
-CONVERSACIÓN PREVIA:
-{contexto_memoria}
-
-REGISTROS EMPRESARIALES:
-{contexto_sheet}
-
-Pregunta:
-{texto}
-"""
-        else:
-            prompt = f"""
-CONVERSACIÓN PREVIA:
-{contexto_memoria}
-
-Pregunta:
-{texto}
-"""
+        historial_txt = "\n".join([f"U: {h['u']}\nA: {h['a']}" for h in historial[-2:]])
+        
+        # 3. Búsqueda en Google Sheet
+        contexto_sheet = buscar_en_sheet(texto or "", historial_txt)
+        
+        # 4. Construir Prompt de texto puro (Ahorro máximo de tokens)
+        prompt = f"Historial:\n{historial_txt}\n"
+        if contexto_sheet: prompt += f"\nRegistros Excel:\n{contexto_sheet}\n"
+        if texto_extraido: prompt += f"\nDocumento adjunto:\n{texto_extraido}\n"
+        prompt += f"\nUsuario: {texto or 'Analiza el documento'}"
 
         response = model.generate_content(prompt)
-        respuesta_texto = response.text
+        
+        # Guardar memoria corta
+        memoria_conversacion[session_id].append({"u": texto, "a": response.text})
+        if len(memoria_conversacion[session_id]) > 5: memoria_conversacion[session_id].pop(0)
 
-        memoria_conversacion[session_id].append({
-            "usuario": texto,
-            "asistente": respuesta_texto
-        })
-
-        return {"respuesta": respuesta_texto}
+        return {"respuesta": response.text}
 
     except Exception as e:
-        print("🔥 ERROR:", e)
+        print(f"Error: {e}")
         return {"respuesta": "Error procesando la solicitud."}
 
-# ==========================================
-# HOME
-# ==========================================
-
 @app.get("/")
-def home():
-    return {"status": "Servidor IA Empresarial Activo"}
+def home(): return {"status": "Servidor IA Activo"}
