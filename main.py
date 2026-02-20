@@ -12,6 +12,8 @@ import io
 import pytesseract
 from PIL import Image
 from collections import defaultdict
+import unicodedata
+import re
 
 # ==========================================
 # CONFIGURACIÓN GEMINI
@@ -63,17 +65,37 @@ memoria_conversacion = defaultdict(list)
 
 GOOGLE_SHEET_CSV_URL = "PEGA_AQUI_TU_LINK_CSV_REAL"
 
+def normalizar_texto(texto):
+    texto = texto.lower()
+    texto = unicodedata.normalize("NFD", texto)
+    texto = texto.encode("ascii", "ignore").decode("utf-8")
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    return texto
+
 def buscar_texto_libre(df, consulta):
-    palabras = consulta.lower().split()
+    consulta_norm = normalizar_texto(consulta)
 
-    filtro = df.astype(str).apply(
-        lambda fila: any(
-            palabra in " ".join(fila).lower()
-            for palabra in palabras
-        ),
-        axis=1
-    )
+    # eliminar palabras irrelevantes
+    stopwords = [
+        "el","la","los","las","un","una","unos","unas",
+        "de","del","en","y","o","a","que","hubo","hay",
+        "alguno","alguna","algun","trabajo","linea","lineas"
+    ]
 
+    palabras = [
+        p for p in consulta_norm.split()
+        if p not in stopwords and len(p) > 2
+    ]
+
+    if not palabras:
+        return pd.DataFrame()
+
+    def fila_coincide(fila):
+        texto_fila = normalizar_texto(" ".join(fila.astype(str)))
+        coincidencias = sum(1 for palabra in palabras if palabra in texto_fila)
+        return coincidencias >= 1  # con 1 coincidencia ya es válido
+
+    filtro = df.apply(fila_coincide, axis=1)
     return df[filtro]
 
 def obtener_datos_sheet(busqueda: str = "") -> str:
