@@ -20,7 +20,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash", # Más económico para tareas empresariales
+    model_name="gemini-2.5-flash",
     generation_config={"temperature": 0.2},
     system_instruction="Eres un asistente de mantenimiento. Usa el contexto de los archivos y el Excel para responder de forma técnica y breve."
 )
@@ -59,23 +59,31 @@ def normalizar(t):
 def buscar_en_sheet(query, historial=""):
     global cache_excel
     try:
-        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
-            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+        # 1. Cache inteligente: Solo descargar si es necesario
+        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 600:
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=5) # Timeout corto
             cache_excel["df"] = pd.read_csv(io.StringIO(res.text)).fillna("")
             cache_excel["last_update"] = time.time()
         
         df = cache_excel["df"]
-        terminos = [p for p in normalizar(f"{query} {historial}").split() if len(p) > 2]
+        terminos = [p for p in normalizar(f"{query}").split() if len(p) > 2]
         
         if not terminos: return ""
         
-        # Búsqueda eficiente en todas las celdas
-        mask = df.apply(lambda row: any(t in normalizar(" ".join(row.astype(str))) for t in terminos), axis=1)
-        res_df = df[mask].head(5)
+        # 2. Búsqueda mucho más rápida (vectorizada)
+        # Creamos una serie con todo el texto de la fila una sola vez
+        if 'text_search' not in df.columns:
+            df['text_search'] = df.astype(str).apply(lambda x: normalizar(" ".join(x)), axis=1)
         
-        columnas = [c for c in df.columns if any(k in c.lower() for k in ["orden", "desc", "obs", "resp", "equipo", "estado"])]
+        # Filtramos
+        mask = df['text_search'].str.contains('|'.join(terminos), na=False)
+        res_df = df[mask].head(3) # Reducimos a 3 resultados para ser más veloces
+        
+        columnas = [c for c in df.columns if any(k in c.lower() for k in ["orden", "desc", "equipo", "estado"]) and c != 'text_search']
         return res_df[columnas].to_markdown(index=False) if not res_df.empty else ""
-    except: return ""
+    except Exception as e:
+        print(f"Error en sheet: {e}")
+        return ""
 
 # ==========================================
 # ENDPOINT PRINCIPAL
