@@ -34,19 +34,13 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
-    generation_config={"temperature": 0.0},
+    generation_config={"temperature": 1,  # OBLIGATORIO: 0.0 elimina la creatividad e impide inventos.
+    "top_p": 1,
+    "max_output_tokens": 800,
+},
     system_instruction="Eres un asistente técnico experto en gestión de mantenimiento y todas tus respuestas entregalas en español en ningun otro idioma que no sea español. "
-    "Tu única fuente de verdad es el contexto de 'Base de datos Jotform pestaña OMBASE' y 'Documento adjunto'. "
-    "Analiza los datos paso a paso: cuenta filas si te piden cantidades, extrae nombres si piden responsables, "
-    "o resume estados si piden estatus. "
-    "informa sobre la descripción del trabajo piezas, herramientas"
-    "si te piden fechas, identifica las más recientes. indicando cual fue el trabajo mas reciente y que orden asociada asi como la descripción "
-    "Si la información está en la tabla, dásela al usuario detalladamente. "
-    "Brinda consejos"
-    "Sé directo, técnico y no uses plantillas vacías como '[Número]'."
-    "Si los datos están presentes, dáselos al usuario de forma clara y profesional. "
-    "Si no hay datos que coincidan, explica que no se encontraron registros en la base de datos."
-    
+    "debes interpretar la pregunta que realizará el usuario analizando completamente la información que recibirás por parte del código el cuál consultara a GOOGLE_SHEET_CSV_URL, no debes inventar respuestas si no recibes nada de información debes responder exactamente que es lo que te llego"
+    "tus respuestas deben explicar claramente ya que te preguntaran por mantenimiento, repuestos"
 )
 
 app = FastAPI()
@@ -79,48 +73,49 @@ def extraer_de_excel_adjunto(bytes_file):
 def buscar_en_sheet(query, historial=""):
     global cache_excel
     try:
-        # 1. Carga con Cache (Esto ya lo haces bien)
+        # 1. Carga y preparación de datos
         if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
             res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
-            # Forzamos que todo sea string para evitar errores de tipo
-            cache_excel["df"] = pd.read_csv(io.StringIO(res.text)).fillna("").astype(str)
+            df_raw = pd.read_csv(io.StringIO(res.text)).fillna("")
+            
+            # --- MEJORA: Formateo de fechas automático ---
+            col_fecha = "FECHA (DÍA 01)"
+            if col_fecha in df_raw.columns:
+                df_raw[col_fecha] = pd.to_datetime(df_raw[col_fecha], errors='coerce').dt.strftime('%d-%m-%Y')
+            
+            cache_excel["df"] = df_raw.astype(str)
             cache_excel["last_update"] = time.time()
         
         df = cache_excel["df"].copy()
         
-        # 2. Limpieza de la consulta
-        # Eliminamos palabras vacías (de, el, la, un, para) para quedarnos con lo importante
-        stop_words = ["de", "el", "la", "un", "una", "en", "para", "con", "hay", "que", "si", "sobre"]
+        # 2. Normalizar las palabras clave del usuario
+        stop_words = ["de", "el", "la", "un", "una", "en", "para", "con", "hay", "que", "si", "sobre", "donde", "cuando"]
         palabras_clave = [normalizar(w) for w in query.split() if len(w) > 2 and w.lower() not in stop_words]
         
         if not palabras_clave: return ""
 
-        # 3. Búsqueda Multi-Palabra (Identifica TODO)
-        # Buscamos filas donde aparezcan las palabras clave
-        # Creamos una serie que concatena las columnas relevantes para buscar rápido
-        # (Ajusta las columnas si prefieres buscar solo en 'DESCRIPCIÓN' y 'ORDEN')
-        contenido_busqueda = df.apply(lambda x: ' '.join(x), axis=1).apply(normalizar)
+        # 3. BÚSQUEDA ROBUSTA (Normalizando el Excel en tiempo real)
+        # Creamos una serie de texto que junta todas las columnas y las normaliza (quita tildes y mayúsculas)
+        # Esto permite encontrar "Belando" aunque en el Excel esté como "BELÁNDO"
+        contenido_excel_normalizado = df.apply(lambda x: ' '.join(x), axis=1).apply(normalizar)
         
-        # Filtro: La fila debe contener AL MENOS una de las palabras clave principales
-        # Opcional: Puedes cambiar '.any()' por '.all()' si quieres que sea más estricto
-        masks = [contenido_busqueda.str.contains(p, case=False, na=False) for p in palabras_clave]
-        
-        # Combinamos las máscaras (esto encontrará "evaporador", "evaporadores", "evap", etc.)
-        final_mask = masks[0]
-        for m in masks[1:]:
-            final_mask = final_mask & m # Usamos & (AND) para que busque filas que tengan ambas palabras
+        # Filtro: La fila debe contener TODAS las palabras clave en cualquier posición
+        final_mask = contenido_excel_normalizado.str.contains(palabras_clave[0], na=False)
+        for p in palabras_clave[1:]:
+            final_mask = final_mask & contenido_excel_normalizado.str.contains(p, na=False)
             
         res_df = df[final_mask]
 
-        # 4. Control de "Peso" de Tokens
-        # Si encuentra 100 filas, mandarlas todas a Gemini saldría carísimo.
-        # Limitamos a las 20 más recientes (asumiendo que las últimas filas son las nuevas)
-        res_df = res_df.tail(20) 
-        
+        # 4. Ahorro de Tokens: Enviamos solo columnas necesarias y limitamos filas
         if res_df.empty:
             return ""
 
-        return res_df.to_markdown(index=False)
+        # Seleccionamos las columnas más importantes para no saturar a Gemini
+        columnas_importantes = ["N° DE ORDEN", "FECHA (DÍA 01)", "DESCRIPCIÓN DEL TRABAJO", "STATUS 1", "DIA 1) TEC. N° 01"]
+        columnas_validas = [c for c in columnas_importantes if c in res_df.columns]
+        
+        # Enviamos las últimas 15 (las más recientes)
+        return res_df[columnas_validas].tail(15).to_markdown(index=False)
         
     except Exception as e:
         print(f"Error búsqueda: {e}")
