@@ -34,9 +34,11 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
-    generation_config={"temperature": 1,  # OBLIGATORIO: 0.0 elimina la creatividad e impide inventos.
-    "top_p": 1,
-    "max_output_tokens": 800,
+    generation_config = {
+    "temperature": 0.0,      # Cero creatividad, máxima precisión técnica
+    "top_p": 0.95,           # Permite una elección de palabras más fluida
+    "top_k": 40,
+        "response_mime_type": "text/plain",
 },
     system_instruction="Eres un asistente técnico experto en gestión de mantenimiento y todas tus respuestas entregalas en español en ningun otro idioma que no sea español. "
     "debes interpretar la pregunta que realizará el usuario analizando completamente la información que recibirás por parte del código el cuál consultara a GOOGLE_SHEET_CSV_URL, no debes inventar respuestas si no recibes nada de información debes responder exactamente que es lo que te llego"
@@ -167,12 +169,30 @@ async def chat(
         prompt += f"\nUsuario: {texto or 'Analiza el documento'}"
 
         response = model.generate_content(prompt)
+
+        # ==========================================
+        # --- NUEVA SECCIÓN: CONTEO DE TOKENS ---
+        # ==========================================
+        usage = response.usage_metadata
+        print(f"\n--- REPORTE DE CONSUMO (Sesión: {session_id}) ---")
+        print(f"Tokens Entrada (Prompt): {usage.prompt_token_count}")
+        print(f"Tokens Salida (Respuesta): {usage.candidates_token_count}")
+        print(f"Tokens Totales: {usage.total_token_count}")
+        print(f"------------------------------------------\n")
+        # ==========================================
+
+
         
         # Guardar memoria corta
         memoria_conversacion[session_id].append({"u": texto, "a": response.text})
         if len(memoria_conversacion[session_id]) > 5: memoria_conversacion[session_id].pop(0)
 
-        return {"respuesta": response.text}
+        return {
+            "respuesta": response.text,
+            "tokens_usados": usage.total_token_count 
+        }
+
+        #return {"respuesta": response.text}
 
     except Exception as e:
         print(f"Error: {e}")
