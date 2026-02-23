@@ -12,6 +12,20 @@ import time
 import pdfplumber
 from docx import Document
 
+def normalizar(texto):
+    if not texto:
+        return ""
+    # Convertir a minúsculas
+    texto = str(texto).lower()
+    # Eliminar tildes y acentos (ej: Evaporador -> evaporador)
+    texto = "".join(
+        c for c in unicodedata.normalize('NFD', texto)
+        if unicodedata.category(c) != 'Mn'
+    )
+    # Eliminar caracteres especiales excepto letras y números
+    texto = re.sub(r'[^a-z0-9\s]', '', texto)
+    return texto.strip()
+
 # ==========================================
 # CONFIGURACIÓN
 # ==========================================
@@ -52,37 +66,54 @@ def extraer_de_excel_adjunto(bytes_file):
 # LÓGICA DE BÚSQUEDA EN GOOGLE SHEET
 # ==========================================
 
-def normalizar(t):
-    if not t: return ""
-    return unicodedata.normalize("NFD", t.lower()).encode("ascii", "ignore").decode("utf-8")
-
 def buscar_en_sheet(query, historial=""):
     global cache_excel
     try:
-        # 1. Cache inteligente: Solo descargar si es necesario
-        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 600:
-            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=5) # Timeout corto
-            cache_excel["df"] = pd.read_csv(io.StringIO(res.text)).fillna("")
+        # 1. Carga con Cache (Esto ya lo haces bien)
+        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+            # Forzamos que todo sea string para evitar errores de tipo
+            cache_excel["df"] = pd.read_csv(io.StringIO(res.text)).fillna("").astype(str)
             cache_excel["last_update"] = time.time()
         
-        df = cache_excel["df"]
-        terminos = [p for p in normalizar(f"{query}").split() if len(p) > 2]
+        df = cache_excel["df"].copy()
         
-        if not terminos: return ""
+        # 2. Limpieza de la consulta
+        # Eliminamos palabras vacías (de, el, la, un, para) para quedarnos con lo importante
+        stop_words = ["de", "el", "la", "un", "una", "en", "para", "con", "hay", "que", "si", "sobre"]
+        palabras_clave = [normalizar(w) for w in query.split() if len(w) > 2 and w.lower() not in stop_words]
         
-        # 2. Búsqueda mucho más rápida (vectorizada)
-        # Creamos una serie con todo el texto de la fila una sola vez
-        if 'text_search' not in df.columns:
-            df['text_search'] = df.astype(str).apply(lambda x: normalizar(" ".join(x)), axis=1)
+        if not palabras_clave: return ""
+
+        # 3. Búsqueda Multi-Palabra (Identifica TODO)
+        # Buscamos filas donde aparezcan las palabras clave
+        # Creamos una serie que concatena las columnas relevantes para buscar rápido
+        # (Ajusta las columnas si prefieres buscar solo en 'DESCRIPCIÓN' y 'ORDEN')
+        contenido_busqueda = df.apply(lambda x: ' '.join(x), axis=1).apply(normalizar)
         
-        # Filtramos
-        mask = df['text_search'].str.contains('|'.join(terminos), na=False)
-        res_df = df[mask].head(3) # Reducimos a 3 resultados para ser más veloces
+        # Filtro: La fila debe contener AL MENOS una de las palabras clave principales
+        # Opcional: Puedes cambiar '.any()' por '.all()' si quieres que sea más estricto
+        masks = [contenido_busqueda.str.contains(p, case=False, na=False) for p in palabras_clave]
         
-        columnas = [c for c in df.columns if any(k in c.lower() for k in ["orden", "desc", "equipo", "estado"]) and c != 'text_search']
-        return res_df[columnas].to_markdown(index=False) if not res_df.empty else ""
+        # Combinamos las máscaras (esto encontrará "evaporador", "evaporadores", "evap", etc.)
+        final_mask = masks[0]
+        for m in masks[1:]:
+            final_mask = final_mask & m # Usamos & (AND) para que busque filas que tengan ambas palabras
+            
+        res_df = df[final_mask]
+
+        # 4. Control de "Peso" de Tokens
+        # Si encuentra 100 filas, mandarlas todas a Gemini saldría carísimo.
+        # Limitamos a las 20 más recientes (asumiendo que las últimas filas son las nuevas)
+        res_df = res_df.tail(20) 
+        
+        if res_df.empty:
+            return ""
+
+        return res_df.to_markdown(index=False)
+        
     except Exception as e:
-        print(f"Error en sheet: {e}")
+        print(f"Error búsqueda: {e}")
         return ""
 
 # ==========================================
