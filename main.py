@@ -13,16 +13,15 @@ import pdfplumber
 from docx import Document
 
 def normalizar(texto):
-    if not texto:
-        return ""
-    # Convertir a minúsculas
+    if not texto: return ""
+    # 1. Convertir a string y minúsculas
     texto = str(texto).lower()
-    # Eliminar tildes y acentos (ej: Evaporador -> evaporador)
+    # 2. Quitar tildes (Ej: Belando/Belándo -> belando)
     texto = "".join(
         c for c in unicodedata.normalize('NFD', texto)
         if unicodedata.category(c) != 'Mn'
     )
-    # Eliminar caracteres especiales excepto letras y números
+    # 3. Quitar todo lo que no sea letras o números (puntos, comas, etc.)
     texto = re.sub(r'[^a-z0-9\s]', '', texto)
     return texto.strip()
 
@@ -35,8 +34,19 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
-    generation_config={"temperature": 0.2},
-    system_instruction="Eres un asistente de mantenimiento. Usa el contexto de los archivos y el Excel para responder de forma técnica y breve."
+    generation_config={"temperature": 0.0},
+    system_instruction="Eres un asistente técnico experto en gestión de mantenimiento y todas tus respuestas entregalas en español en ningun otro idioma que no sea español. "
+    "Tu única fuente de verdad es el contexto de 'Base de datos Jotform pestaña OMBASE' y 'Documento adjunto'. "
+    "Analiza los datos paso a paso: cuenta filas si te piden cantidades, extrae nombres si piden responsables, "
+    "o resume estados si piden estatus. "
+    "informa sobre la descripción del trabajo piezas, herramientas"
+    "si te piden fechas, identifica las más recientes. indicando cual fue el trabajo mas reciente y que orden asociada asi como la descripción "
+    "Si la información está en la tabla, dásela al usuario detalladamente. "
+    "Brinda consejos"
+    "Sé directo, técnico y no uses plantillas vacías como '[Número]'."
+    "Si los datos están presentes, dáselos al usuario de forma clara y profesional. "
+    "Si no hay datos que coincidan, explica que no se encontraron registros en la base de datos."
+    
 )
 
 app = FastAPI()
