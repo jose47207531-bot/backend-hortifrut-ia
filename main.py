@@ -86,20 +86,81 @@ def extraer_de_excel_adjunto(bytes_file):
 def buscar_en_sheet(query):
     global cache_excel
     try:
-        res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
-        print("Status:", res.status_code)
-        print("Primeros 300 caracteres:\n", res.text[:300])
+        # Cache 5 minutos
+        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+            df_raw = pd.read_csv(io.BytesIO(res.content),encoding="utf-8",sep=None,engine="python").fillna("")
 
-        df = pd.read_csv(io.StringIO(res.text), sep=None, engine="python")
-        print("Filas cargadas:", len(df))
-        print("Columnas:", df.columns.tolist())
-        print(df.head(3))
+            col_fecha = "FECHA (DÍA 01)"
+            if col_fecha in df_raw.columns:
+                df_raw[col_fecha] = pd.to_datetime(
+                    df_raw[col_fecha], errors='coerce'
+                ).dt.strftime('%d-%m-%Y')
 
-        return "TEST OK"
+            cache_excel["df"] = df_raw.astype(str)
+            cache_excel["last_update"] = time.time()
+
+        df = cache_excel["df"].copy()
+
+        # 🔹 Normalizar consulta completa
+        query_normalizada = normalizar(query)
+
+        if not query_normalizada:
+            return ""
+
+        # 🔹 Unir todas las columnas en una sola cadena por fila
+        df["contenido_completo"] = df.apply(
+            lambda x: ' '.join(x.astype(str)), axis=1
+        )
+
+        df["contenido_normalizado"] = df["contenido_completo"].apply(normalizar)
+
+        # ==========================================
+        # 1️⃣ Coincidencia directa completa
+        # ==========================================
+        coincidencia_directa = df[
+            df["contenido_normalizado"].str.contains(query_normalizada, na=False)
+        ]
+
+        if not coincidencia_directa.empty:
+            resultado = coincidencia_directa
+        else:
+            # ==========================================
+            # 2️⃣ Coincidencia por partes (score flexible)
+            # ==========================================
+            palabras = query_normalizada.split()
+
+            score = df["contenido_normalizado"].apply(
+                lambda fila: sum(1 for p in palabras if p in fila)
+            )
+
+            df["score"] = score
+
+            resultado = df[df["score"] > 0].sort_values(
+                by="score", ascending=False
+            )
+
+        if resultado.empty:
+            return ""
+
+        columnas_importantes = [
+            "N° DE ORDEN",
+            "FECHA (DÍA 01)",
+            "DESCRIPCIÓN DEL TRABAJO",
+            "STATUS 1",
+            "DIA 1) TEC. N° 01"
+        ]
+
+        columnas_validas = [
+            c for c in columnas_importantes if c in resultado.columns
+        ]
+
+        return resultado[columnas_validas].head(15).to_markdown(index=False)
 
     except Exception as e:
-        print("Error real:", e)
+        print(f"Error búsqueda: {e}")
         return ""
+
            
 
 # ==========================================
