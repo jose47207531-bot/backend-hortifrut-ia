@@ -83,13 +83,22 @@ def extraer_de_excel_adjunto(bytes_file):
 # BÚSQUEDA INTELIGENTE EN GOOGLE SHEET
 # ==========================================
 
+# ==========================================
+# BÚSQUEDA INTELIGENTE EN GOOGLE SHEET
+# ==========================================
+
 def buscar_en_sheet(query):
     global cache_excel
     try:
         # Cache 5 minutos
         if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
             res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
-            df_raw = pd.read_csv(io.BytesIO(res.content),encoding="utf-8",sep=None,engine="python").fillna("")
+            df_raw = pd.read_csv(
+                io.BytesIO(res.content),
+                encoding="utf-8",
+                sep=None,
+                engine="python"
+            ).fillna("")
 
             col_fecha = "FECHA (DÍA 01)"
             if col_fecha in df_raw.columns:
@@ -102,43 +111,73 @@ def buscar_en_sheet(query):
 
         df = cache_excel["df"].copy()
 
-        # 🔹 Normalizar consulta completa
         query_normalizada = normalizar(query)
 
         if not query_normalizada:
             return ""
 
-        # 🔹 Unir todas las columnas en una sola cadena por fila
-        df["contenido_completo"] = df.apply(
-            lambda x: ' '.join(x.astype(str)), axis=1
-        )
+        # =====================================================
+        # 🔎 SI LA CONSULTA ES PRINCIPALMENTE NUMÉRICA
+        # =====================================================
+        if query_normalizada.isdigit():
 
-        df["contenido_normalizado"] = df["contenido_completo"].apply(normalizar)
+            # 1️⃣ Buscar coincidencia EXACTA en cualquier columna
+            exactos = df[
+                df.apply(
+                    lambda fila: any(
+                        str(valor).strip().replace(".0", "") == query_normalizada
+                        for valor in fila
+                    ),
+                    axis=1
+                )
+            ]
 
-        # ==========================================
-        # 1️⃣ Coincidencia directa completa
-        # ==========================================
-        coincidencia_directa = df[
-            df["contenido_normalizado"].str.contains(query_normalizada, na=False)
-        ]
+            if not exactos.empty:
+                resultado = exactos
+            else:
+                # 2️⃣ Buscar coincidencias que EMPIECEN por ese número
+                parciales = df(
+                    df.apply(
+                        lambda fila: any(
+                            str(valor).strip().replace(".0", "").startswith(query_normalizada)
+                            for valor in fila
+                        ),
+                        axis=1
+                    ),
+                    axis=1
+                )
 
-        if not coincidencia_directa.empty:
-            resultado = coincidencia_directa
+                resultado = parciales
+
         else:
-            # ==========================================
-            # 2️⃣ Coincidencia por partes (score flexible)
-            # ==========================================
-            palabras = query_normalizada.split()
+            # =====================================================
+            # 🔎 BÚSQUEDA NORMAL POR TEXTO (TU LÓGICA MEJORADA)
+            # =====================================================
 
-            score = df["contenido_normalizado"].apply(
-                lambda fila: sum(1 for p in palabras if p in fila)
+            df["contenido_completo"] = df.apply(
+                lambda x: ' '.join(x.astype(str)), axis=1
             )
 
-            df["score"] = score
+            df["contenido_normalizado"] = df["contenido_completo"].apply(normalizar)
 
-            resultado = df[df["score"] > 0].sort_values(
-                by="score", ascending=False
-            )
+            coincidencia_directa = df[
+                df["contenido_normalizado"].str.contains(query_normalizada, na=False)
+            ]
+
+            if not coincidencia_directa.empty:
+                resultado = coincidencia_directa
+            else:
+                palabras = query_normalizada.split()
+
+                score = df["contenido_normalizado"].apply(
+                    lambda fila: sum(1 for p in palabras if p in fila)
+                )
+
+                df["score"] = score
+
+                resultado = df[df["score"] > 0].sort_values(
+                    by="score", ascending=False
+                )
 
         if resultado.empty:
             return ""
