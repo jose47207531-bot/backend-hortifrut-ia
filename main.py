@@ -12,21 +12,23 @@ import time
 import pdfplumber
 from docx import Document
 
+# ==========================================
+# NORMALIZADOR
+# ==========================================
+
 def normalizar(texto):
-    if not texto: return ""
-    # 1. Convertir a string y minúsculas
+    if not texto:
+        return ""
     texto = str(texto).lower()
-    # 2. Quitar tildes (Ej: Belando/Belándo -> belando)
     texto = "".join(
         c for c in unicodedata.normalize('NFD', texto)
         if unicodedata.category(c) != 'Mn'
     )
-    # 3. Quitar todo lo que no sea letras o números (puntos, comas, etc.)
     texto = re.sub(r'[^a-z0-9\s]', '', texto)
     return texto.strip()
 
 # ==========================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN GEMINI
 # ==========================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -34,26 +36,35 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
-    generation_config = {
-    "temperature": 0.0,      # Cero creatividad, máxima precisión técnica
-    "top_p": 0.95,           # Permite una elección de palabras más fluida
-    "top_k": 40,
+    generation_config={
+        "temperature": 0.0,
+        "top_p": 0.95,
+        "top_k": 40,
         "response_mime_type": "text/plain",
-},
-    system_instruction="Eres un asistente técnico experto en gestión de mantenimiento y todas tus respuestas entregalas en español en ningun otro idioma que no sea español. "
-    "debes interpretar la pregunta que realizará el usuario analizando completamente la información que recibirás por parte del código el cuál consultara a GOOGLE_SHEET_CSV_URL, no debes inventar respuestas si no recibes nada de información debes responder exactamente que es lo que te llego"
-    "tus respuestas deben explicar claramente ya que te preguntaran por mantenimiento, repuestos"
+    },
+    system_instruction=(
+        "Eres un asistente técnico experto en gestión de mantenimiento. "
+        "Responde únicamente en español. "
+        "NO debes inventar información. "
+        "Si no hay datos en 'Registros Excel', debes responder exactamente: "
+        "'No existe información en el registro para esta consulta.'"
+    )
 )
+
+# ==========================================
+# FASTAPI
+# ==========================================
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 memoria_conversacion = defaultdict(list)
 cache_excel = {"df": None, "last_update": 0}
+
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8/export?format=csv&gid=1960130423"
 
 # ==========================================
-# EXTRACTORES LOCALES (Para ahorrar tokens)
+# EXTRACTORES LOCALES
 # ==========================================
 
 def extraer_de_pdf(bytes_file):
@@ -66,59 +77,74 @@ def extraer_de_docx(bytes_file):
 
 def extraer_de_excel_adjunto(bytes_file):
     df = pd.read_excel(io.BytesIO(bytes_file))
-    return df.head(20).to_markdown(index=False) # Solo enviamos una muestra para ahorrar
+    return df.head(20).to_markdown(index=False)
 
 # ==========================================
-# LÓGICA DE BÚSQUEDA EN GOOGLE SHEET
+# BÚSQUEDA INTELIGENTE EN GOOGLE SHEET
 # ==========================================
 
-def buscar_en_sheet(query, historial=""):
+def buscar_en_sheet(query):
     global cache_excel
     try:
-        # 1. Carga y preparación de datos
+        # Cache 5 minutos
         if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
             res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
             df_raw = pd.read_csv(io.StringIO(res.text)).fillna("")
-            
-            # --- MEJORA: Formateo de fechas automático ---
+
             col_fecha = "FECHA (DÍA 01)"
             if col_fecha in df_raw.columns:
-                df_raw[col_fecha] = pd.to_datetime(df_raw[col_fecha], errors='coerce').dt.strftime('%d-%m-%Y')
-            
+                df_raw[col_fecha] = pd.to_datetime(
+                    df_raw[col_fecha], errors='coerce'
+                ).dt.strftime('%d-%m-%Y')
+
             cache_excel["df"] = df_raw.astype(str)
             cache_excel["last_update"] = time.time()
-        
+
         df = cache_excel["df"].copy()
-        
-        # 2. Normalizar las palabras clave del usuario
-        stop_words = ["de", "el", "la", "un", "una", "en", "para", "con", "hay", "que", "si", "sobre", "donde", "cuando"]
-        palabras_clave = [normalizar(w) for w in query.split() if len(w) > 2 and w.lower() not in stop_words]
-        
-        if not palabras_clave: return ""
 
-        # 3. BÚSQUEDA ROBUSTA (Normalizando el Excel en tiempo real)
-        # Creamos una serie de texto que junta todas las columnas y las normaliza (quita tildes y mayúsculas)
-        # Esto permite encontrar "Belando" aunque en el Excel esté como "BELÁNDO"
-        contenido_excel_normalizado = df.apply(lambda x: ' '.join(x), axis=1).apply(normalizar)
-        
-        # Filtro: La fila debe contener TODAS las palabras clave en cualquier posición
-        final_mask = contenido_excel_normalizado.str.contains(palabras_clave[0], na=False)
-        for p in palabras_clave[1:]:
-            final_mask = final_mask & contenido_excel_normalizado.str.contains(p, na=False)
-            
-        res_df = df[final_mask]
+        stop_words = ["de", "el", "la", "un", "una", "en", "para", "con",
+                      "hay", "que", "si", "sobre", "donde", "cuando"]
+        palabras_clave = [
+            normalizar(w)
+            for w in query.split()
+            if len(w) > 2 and w.lower() not in stop_words
+        ]
 
-        # 4. Ahorro de Tokens: Enviamos solo columnas necesarias y limitamos filas
+        if not palabras_clave:
+            return ""
+
+        contenido_excel_normalizado = df.apply(
+            lambda x: ' '.join(x), axis=1
+        ).apply(normalizar)
+
+        # SCORE por coincidencias
+        score = contenido_excel_normalizado.apply(
+            lambda fila: sum(1 for p in palabras_clave if p in fila)
+        )
+
+        df["score"] = score
+
+        res_df = df[df["score"] > 0].sort_values(
+            by="score", ascending=False
+        )
+
         if res_df.empty:
             return ""
 
-        # Seleccionamos las columnas más importantes para no saturar a Gemini
-        columnas_importantes = ["N° DE ORDEN", "FECHA (DÍA 01)", "DESCRIPCIÓN DEL TRABAJO", "STATUS 1", "DIA 1) TEC. N° 01"]
-        columnas_validas = [c for c in columnas_importantes if c in res_df.columns]
-        
-        # Enviamos las últimas 15 (las más recientes)
-        return res_df[columnas_validas].tail(15).to_markdown(index=False)
-        
+        columnas_importantes = [
+            "N° DE ORDEN",
+            "FECHA (DÍA 01)",
+            "DESCRIPCIÓN DEL TRABAJO",
+            "STATUS 1",
+            "DIA 1) TEC. N° 01"
+        ]
+
+        columnas_validas = [
+            c for c in columnas_importantes if c in res_df.columns
+        ]
+
+        return res_df[columnas_validas].head(15).to_markdown(index=False)
+
     except Exception as e:
         print(f"Error búsqueda: {e}")
         return ""
@@ -134,69 +160,83 @@ async def chat(
     archivo: UploadFile = File(None)
 ):
     try:
+
         texto_extraido = ""
-        mimetype = ""
-        
-        # 1. Procesar archivo localmente para no gastar tokens de imagen/multimedia si es texto
+
+        # -------- PROCESAMIENTO DE ARCHIVO --------
         if archivo:
             mimetype = archivo.content_type
             bytes_file = await archivo.read()
-            
-            if "pdf" in mimetype:
-                texto_extraido = f"\n[Contenido del PDF adjunto]:\n{extraer_de_pdf(bytes_file)}"
-            elif "word" in mimetype or "officedocument.wordprocessingml" in mimetype:
-                texto_extraido = f"\n[Contenido del Word adjunto]:\n{extraer_de_docx(bytes_file)}"
-            elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
-                texto_extraido = f"\n[Contenido del Excel adjunto]:\n{extraer_de_excel_adjunto(bytes_file)}"
-            elif "image" in mimetype or "video" in mimetype:
-                # Si es imagen o video, no hay de otra: enviamos a Gemini para que use su visión
-                # Pero esto solo pasará con archivos visuales
-                input_data = [{"mime_type": mimetype, "data": bytes_file}, texto or "Analiza esto"]
-                response = model.generate_content(input_data)
-                return {"respuesta": response.text}
 
-        # 2. Si no fue imagen/video, procesamos como texto (más barato)
+            if "pdf" in mimetype:
+                texto_extraido = extraer_de_pdf(bytes_file)
+            elif "word" in mimetype or "officedocument.wordprocessingml" in mimetype:
+                texto_extraido = extraer_de_docx(bytes_file)
+            elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
+                texto_extraido = extraer_de_excel_adjunto(bytes_file)
+
+        # -------- BÚSQUEDA EN GOOGLE SHEET --------
+        contexto_sheet = buscar_en_sheet(texto or "")
+
+        # 🔴 BLOQUEO ANTI-ALUCINACIÓN
+        if not contexto_sheet:
+            return {
+                "respuesta": "No existe información en el registro para esta consulta.",
+                "tokens_usados": 0
+            }
+
         historial = memoria_conversacion[session_id]
-        historial_txt = "\n".join([f"U: {h['u']}\nA: {h['a']}" for h in historial[-2:]])
-        
-        # 3. Búsqueda en Google Sheet
-        contexto_sheet = buscar_en_sheet(texto or "", historial_txt)
-        
-        # 4. Construir Prompt de texto puro (Ahorro máximo de tokens)
-        prompt = f"Historial:\n{historial_txt}\n"
-        if contexto_sheet: prompt += f"\nRegistros Excel:\n{contexto_sheet}\n"
-        if texto_extraido: prompt += f"\nDocumento adjunto:\n{texto_extraido}\n"
-        prompt += f"\nUsuario: {texto or 'Analiza el documento'}"
+        historial_txt = "\n".join(
+            [f"U: {h['u']}\nA: {h['a']}" for h in historial[-2:]]
+        )
+
+        # -------- PROMPT RESTRICTIVO --------
+        prompt = f"""
+Responde únicamente utilizando la información exacta contenida en la sección 'Registros Excel'.
+No agregues información externa.
+Si algo no está explícitamente en los registros, responde:
+"No existe información en el registro para esta consulta."
+
+Historial:
+{historial_txt}
+
+Registros Excel:
+{contexto_sheet}
+
+Usuario: {texto}
+"""
 
         response = model.generate_content(prompt)
 
-        # ==========================================
-        # --- NUEVA SECCIÓN: CONTEO DE TOKENS ---
-        # ==========================================
         usage = response.usage_metadata
+
         print(f"\n--- REPORTE DE CONSUMO (Sesión: {session_id}) ---")
-        print(f"Tokens Entrada (Prompt): {usage.prompt_token_count}")
-        print(f"Tokens Salida (Respuesta): {usage.candidates_token_count}")
+        print(f"Tokens Entrada: {usage.prompt_token_count}")
+        print(f"Tokens Salida: {usage.candidates_token_count}")
         print(f"Tokens Totales: {usage.total_token_count}")
-        print(f"------------------------------------------\n")
-        # ==========================================
+        print("------------------------------------------\n")
 
+        memoria_conversacion[session_id].append({
+            "u": texto,
+            "a": response.text
+        })
 
-        
-        # Guardar memoria corta
-        memoria_conversacion[session_id].append({"u": texto, "a": response.text})
-        if len(memoria_conversacion[session_id]) > 5: memoria_conversacion[session_id].pop(0)
+        if len(memoria_conversacion[session_id]) > 5:
+            memoria_conversacion[session_id].pop(0)
 
         return {
             "respuesta": response.text,
-            "tokens_usados": usage.total_token_count 
+            "tokens_usados": usage.total_token_count
         }
-
-        #return {"respuesta": response.text}
 
     except Exception as e:
         print(f"Error: {e}")
         return {"respuesta": "Error procesando la solicitud."}
 
+# ==========================================
+# ENDPOINT STATUS
+# ==========================================
+
 @app.get("/")
-def home(): return {"status": "Servidor IA Activo"}
+def home():
+    return {"status": "Servidor IA Activo"}
