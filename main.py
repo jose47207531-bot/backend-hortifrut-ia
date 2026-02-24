@@ -147,6 +147,9 @@ def buscar_en_sheet(query):
 
     except Exception as e:
         print(f"Error búsqueda: {e}")
+        print("PALABRAS CLAVE:", palabras_clave)
+        print("Primeras 5 filas normalizadas:")
+        print(contenido_excel_normalizado.head())
         return ""
 
 # ==========================================
