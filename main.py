@@ -111,6 +111,16 @@ def buscar_en_sheet(query):
 
         df = cache_excel["df"].copy()
 
+        print("Columnas detectadas:", df.columns.tolist())
+        print("Primeras 3 filas:")
+        print(df.head(3))
+        print("Consulta recibida:", query)
+        print("Consulta normalizada:", query_normalizada)
+
+
+
+
+
         query_normalizada = normalizar(query)
 
         if not query_normalizada:
