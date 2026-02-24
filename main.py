@@ -102,33 +102,45 @@ def buscar_en_sheet(query):
 
         df = cache_excel["df"].copy()
 
-        stop_words = ["de", "el", "la", "un", "una", "en", "para", "con",
-                      "hay", "que", "si", "sobre", "donde", "cuando"]
-        palabras_clave = [
-            normalizar(w)
-            for w in query.split()
-            if len(w) > 2 and w.lower() not in stop_words
-        ]
+        # 🔹 Normalizar consulta completa
+        query_normalizada = normalizar(query)
 
-        if not palabras_clave:
+        if not query_normalizada:
             return ""
 
-        contenido_excel_normalizado = df.apply(
-            lambda x: ' '.join(x), axis=1
-        ).apply(normalizar)
-
-        # SCORE por coincidencias
-        score = contenido_excel_normalizado.apply(
-            lambda fila: sum(1 for p in palabras_clave if p in fila)
+        # 🔹 Unir todas las columnas en una sola cadena por fila
+        df["contenido_completo"] = df.apply(
+            lambda x: ' '.join(x.astype(str)), axis=1
         )
 
-        df["score"] = score
+        df["contenido_normalizado"] = df["contenido_completo"].apply(normalizar)
 
-        res_df = df[df["score"] > 0].sort_values(
-            by="score", ascending=False
-        )
+        # ==========================================
+        # 1️⃣ Coincidencia directa completa
+        # ==========================================
+        coincidencia_directa = df[
+            df["contenido_normalizado"].str.contains(query_normalizada, na=False)
+        ]
 
-        if res_df.empty:
+        if not coincidencia_directa.empty:
+            resultado = coincidencia_directa
+        else:
+            # ==========================================
+            # 2️⃣ Coincidencia por partes (score flexible)
+            # ==========================================
+            palabras = query_normalizada.split()
+
+            score = df["contenido_normalizado"].apply(
+                lambda fila: sum(1 for p in palabras if p in fila)
+            )
+
+            df["score"] = score
+
+            resultado = df[df["score"] > 0].sort_values(
+                by="score", ascending=False
+            )
+
+        if resultado.empty:
             return ""
 
         columnas_importantes = [
@@ -140,17 +152,16 @@ def buscar_en_sheet(query):
         ]
 
         columnas_validas = [
-            c for c in columnas_importantes if c in res_df.columns
+            c for c in columnas_importantes if c in resultado.columns
         ]
 
-        return res_df[columnas_validas].head(15).to_markdown(index=False)
+        return resultado[columnas_validas].head(15).to_markdown(index=False)
 
     except Exception as e:
         print(f"Error búsqueda: {e}")
-        print("PALABRAS CLAVE:", palabras_clave)
-        print("Primeras 5 filas normalizadas:")
-        print(contenido_excel_normalizado.head())
         return ""
+
+           
 
 # ==========================================
 # ENDPOINT PRINCIPAL
