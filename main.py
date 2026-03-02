@@ -89,6 +89,9 @@ def extraer_de_excel_adjunto(bytes_file):
 
 def buscar_en_sheet(query):
     global cache_excel
+    # Inicializamos para evitar el error de "local variable"
+    query_normalizada = normalizar(query) 
+    resultado = pd.DataFrame()
     try:
         # Cache 5 minutos
         if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
@@ -106,11 +109,14 @@ def buscar_en_sheet(query):
                     df_raw[col_fecha], errors='coerce'
                 ).dt.strftime('%d-%m-%Y')
 
+                df_raw = df_raw.astype(str).replace(r'\.0$', '', regex=True)
+
             cache_excel["df"] = df_raw.astype(str)
             cache_excel["last_update"] = time.time()
 
         df = cache_excel["df"].copy()
 
+      
         print("Columnas detectadas:", df.columns.tolist())
         print("Primeras 3 filas:")
         print(df.head(3))
@@ -141,18 +147,11 @@ def buscar_en_sheet(query):
                 resultado = exactos
             else:
                 # 2️⃣ Buscar coincidencias que EMPIECEN por ese número
-                parciales = df(
-                    df.apply(
-                        lambda fila: any(
-                            str(valor).strip().replace(".0", "").startswith(query_normalizada)
-                            for valor in fila
-                        ),
-                        axis=1
-                    ),
+                mask_parcial = df.apply(
+                    lambda fila: any(str(valor).strip().startswith(query_normalizada) for valor in fila),
                     axis=1
                 )
-
-                resultado = parciales
+                resultado = df[mask_parcial]
 
         else:
             # =====================================================
