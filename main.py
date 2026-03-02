@@ -114,12 +114,7 @@ def buscar_en_sheet(query):
         print("Columnas detectadas:", df.columns.tolist())
         print("Primeras 3 filas:")
         print(df.head(3))
-        print("Consulta recibida:", query)
-        print("Consulta normalizada:", query_normalizada)
-
-
-
-
+           
 
         query_normalizada = normalizar(query)
 
@@ -207,6 +202,8 @@ def buscar_en_sheet(query):
         return resultado[columnas_validas].head(15).to_markdown(index=False)
 
     except Exception as e:
+        print("Consulta recibida:", query)
+        print("Consulta normalizada:", query_normalizada)
         print(f"Error búsqueda: {e}")
         return ""
 
