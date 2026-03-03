@@ -76,6 +76,8 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 memoria_conversacion = defaultdict(list)
+# 🔵 NUEVA MEMORIA PARA CONTEXTO DEL EXCEL
+memoria_contexto_sheet = {}
 cache_excel = {
     "df": None,
     "last_update": 0,
@@ -273,6 +275,14 @@ async def chat(
 
         # -------- BÚSQUEDA EN GOOGLE SHEET --------
         contexto_sheet = buscar_en_sheet(texto or "")
+
+# 🔵 Si encontró algo nuevo, lo guardamos
+        if contexto_sheet:
+           memoria_contexto_sheet[session_id] = contexto_sheet
+        else:
+    # 🔵 Si no encontró nada pero hay contexto previo, lo reutilizamos
+           if session_id in memoria_contexto_sheet:
+            contexto_sheet = memoria_contexto_sheet[session_id]
 
         # 🔴 BLOQUEO ANTI-ALUCINACIÓN
         if not contexto_sheet:
