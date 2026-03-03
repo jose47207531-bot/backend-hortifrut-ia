@@ -2,6 +2,10 @@ import google.generativeai as genai
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from collections import defaultdict
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+import numpy as np
 import os
 import pandas as pd
 import io
@@ -11,6 +15,19 @@ import re
 import time
 import pdfplumber
 from docx import Document
+
+
+STOPWORDS = [
+    "que", "hubo", "en", "la", "el", "los", "las",
+    "de", "del", "al", "y", "o", "un", "una",
+    "hay", "existe", "trabajo", "trabajos",
+    "línea", "linea", "por", "para", "con"
+]
+
+def limpiar_query(query):
+    palabras = query.lower().split()
+    palabras_filtradas = [p for p in palabras if p not in STOPWORDS]
+    return normalizar(" ".join(palabras_filtradas))
 
 # ==========================================
 # NORMALIZADOR
@@ -59,7 +76,12 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 memoria_conversacion = defaultdict(list)
-cache_excel = {"df": None, "last_update": 0}
+cache_excel = {
+    "df": None,
+    "last_update": 0,
+    "vectorizer": None,
+    "tfidf_matrix": None
+}
 
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8/export?format=csv&gid=1960130423"
 
@@ -79,9 +101,6 @@ def extraer_de_excel_adjunto(bytes_file):
     df = pd.read_excel(io.BytesIO(bytes_file))
     return df.head(20).to_markdown(index=False)
 
-# ==========================================
-# BÚSQUEDA INTELIGENTE EN GOOGLE SHEET
-# ==========================================
 
 # ==========================================
 # BÚSQUEDA INTELIGENTE EN GOOGLE SHEET
@@ -89,13 +108,15 @@ def extraer_de_excel_adjunto(bytes_file):
 
 def buscar_en_sheet(query):
     global cache_excel
-    # Inicializamos para evitar el error de "local variable"
-    query_normalizada = normalizar(query) 
-    resultado = pd.DataFrame()
+
     try:
-        # Cache 5 minutos
+        # ==========================================
+        # 1️⃣ ACTUALIZAR CACHE CADA 5 MINUTOS
+        # ==========================================
         if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
+
             res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+
             df_raw = pd.read_csv(
                 io.BytesIO(res.content),
                 encoding="utf-8",
@@ -103,85 +124,106 @@ def buscar_en_sheet(query):
                 engine="python"
             ).fillna("")
 
+            # Formatear fecha si existe
             col_fecha = "FECHA (DÍA 01)"
             if col_fecha in df_raw.columns:
                 df_raw[col_fecha] = pd.to_datetime(
                     df_raw[col_fecha], errors='coerce'
                 ).dt.strftime('%d-%m-%Y')
 
-                df_raw = df_raw.astype(str).replace(r'\.0$', '', regex=True)
+            df_raw = df_raw.astype(str).replace(r'\.0$', '', regex=True)
 
-            cache_excel["df"] = df_raw.astype(str)
-            cache_excel["last_update"] = time.time()
-
-        df = cache_excel["df"].copy()
-
-      
-        print("Columnas detectadas:", df.columns.tolist())
-        print("Primeras 3 filas:")
-        print(df.head(3))
-           
-
-        query_normalizada = normalizar(query)
-
-        if not query_normalizada:
-            return ""
-
-        # =====================================================
-        # 🔎 SI LA CONSULTA ES PRINCIPALMENTE NUMÉRICA
-        # =====================================================
-        if query_normalizada.isdigit():
-
-            # 1️⃣ Buscar coincidencia EXACTA en cualquier columna
-            exactos = df[
-                df.apply(
-                    lambda fila: any(
-                        str(valor).strip().replace(".0", "") == query_normalizada
-                        for valor in fila
-                    ),
-                    axis=1
-                )
-            ]
-
-            if not exactos.empty:
-                resultado = exactos
-            else:
-                # 2️⃣ Buscar coincidencias que EMPIECEN por ese número
-                mask_parcial = df.apply(
-                    lambda fila: any(str(valor).strip().startswith(query_normalizada) for valor in fila),
-                    axis=1
-                )
-                resultado = df[mask_parcial]
-
-        else:
-            # =====================================================
-            # 🔎 BÚSQUEDA NORMAL POR TEXTO (TU LÓGICA MEJORADA)
-            # =====================================================
-
-            df["contenido_completo"] = df.apply(
-                lambda x: ' '.join(x.astype(str)), axis=1
+            # ==========================================
+            # 2️⃣ CREAR COLUMNA DE BÚSQUEDA UNIFICADA
+            # ==========================================
+            df_raw["busqueda"] = (
+                df_raw.astype(str)
+                .agg(' '.join, axis=1)
+                .apply(normalizar)
             )
 
-            df["contenido_normalizado"] = df["contenido_completo"].apply(normalizar)
+            # ==========================================
+            # 3️⃣ CREAR MODELO TF-IDF
+            # ==========================================
+            vectorizer = TfidfVectorizer(
+            ngram_range=(1,2),   # detecta frases como "linea belando"
+            min_df=1,
+            sublinear_tf=True)
+            tfidf_matrix = vectorizer.fit_transform(df_raw["busqueda"])
 
-            coincidencia_directa = df[
-                df["contenido_normalizado"].str.contains(query_normalizada, na=False)
-            ]
+            # Guardar en cache
+            cache_excel["df"] = df_raw
+            cache_excel["vectorizer"] = vectorizer
+            cache_excel["tfidf_matrix"] = tfidf_matrix
+            cache_excel["last_update"] = time.time()
 
-            if not coincidencia_directa.empty:
-                resultado = coincidencia_directa
-            else:
-                palabras = query_normalizada.split()
+        # ==========================================
+        # 4️⃣ RECUPERAR DEL CACHE
+        # ==========================================
+        df = cache_excel["df"]
+        vectorizer = cache_excel["vectorizer"]
+        tfidf_matrix = cache_excel["tfidf_matrix"]
 
-                score = df["contenido_normalizado"].apply(
-                    lambda fila: sum(1 for p in palabras if p in fila)
-                )
+                # ==========================================
+        # 🔢 DETECTAR BÚSQUEDA NUMÉRICA (ORDEN)
+        # ==========================================
 
-                df["score"] = score
+        query_solo_num = re.sub(r'[^0-9]', '', str(query))
 
-                resultado = df[df["score"] > 0].sort_values(
-                    by="score", ascending=False
-                )
+        if len(query_solo_num) >= 4:  # mínimo 4 dígitos para evitar ruido
+
+            mask_numerica = df.astype(str).apply(
+                lambda col: col.str.contains(query_solo_num, na=False)
+            )
+
+            coincidencias = df[mask_numerica.any(axis=1)]
+
+            if not coincidencias.empty:
+
+                columnas_importantes = [
+                    "N° DE ORDEN",
+                    "FECHA (DÍA 01)",
+                    "DESCRIPCIÓN DEL TRABAJO",
+                    "STATUS 1",
+                    "DIA 1) TEC. N° 01"
+                ]
+
+                columnas_validas = [
+                    c for c in columnas_importantes if c in coincidencias.columns
+                ]
+
+                return coincidencias[columnas_validas].head(15).to_markdown(index=False)
+
+        # ==========================================
+        # 5️⃣ LIMPIAR CONSULTA
+        # ==========================================
+        query_limpia = limpiar_query(query)
+        
+
+        if not query_limpia.strip():
+            return ""
+
+        query_normalizada = normalizar(query_limpia)
+
+        
+
+        # ==========================================
+        # 6️⃣ TRANSFORMAR QUERY A VECTOR
+        # ==========================================
+        query_vec = vectorizer.transform([query_normalizada])
+
+        similitudes = cosine_similarity(query_vec, tfidf_matrix).flatten()
+
+        # ==========================================
+        # 7️⃣ OBTENER TOP 15 RESULTADOS
+        # ==========================================
+        top_indices = similitudes.argsort()[-15:][::-1]
+
+        resultado = df.iloc[top_indices]
+
+        # Filtrar solo si similitud > 0
+        threshold = 0.1
+        resultado = resultado[similitudes[top_indices] > threshold]
 
         if resultado.empty:
             return ""
@@ -201,13 +243,8 @@ def buscar_en_sheet(query):
         return resultado[columnas_validas].head(15).to_markdown(index=False)
 
     except Exception as e:
-        print("Consulta recibida:", query)
-        print("Consulta normalizada:", query_normalizada)
-        print(f"Error búsqueda: {e}")
+        print("Error búsqueda TF-IDF:", e)
         return ""
-
-           
-
 # ==========================================
 # ENDPOINT PRINCIPAL
 # ==========================================
