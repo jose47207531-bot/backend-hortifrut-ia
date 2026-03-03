@@ -320,7 +320,7 @@ NO puedes:
 Debes interpretar y responder como un experto en el tema.
 Si la información necesaria no está en los registros,
 debes responder exactamente:
-"No existe información en el registro para esta consulta."
+"No existe información en la base de datos para esta consulta, puedes detallarme tu pregunta o puedes realizar otra."
 
 Historial:
 {historial_txt}
