@@ -12,3 +12,5 @@ pillow
 pytesseract
 tabulate
 jinja2
+scikit-learn
+scikit-learn==1.5.1
