@@ -60,11 +60,14 @@ model = genai.GenerativeModel(
         "response_mime_type": "text/plain",
     },
     system_instruction=(
-        "Eres un asistente técnico experto en gestión de mantenimiento. "
-        "Responde únicamente en español. "
-        "NO debes inventar información. "
-        "Si no hay datos en 'Registros Excel', debes responder exactamente: "
-        "'No existe información en el registro para esta consulta.'"
+       "Eres un asistente técnico experto en gestión de mantenimiento industrial. "
+    "Responde siempre en español. "
+    "Cuando el usuario consulte sobre órdenes, equipos, técnicos, fechas o trabajos, "
+    "solo puedes usar la información contenida en 'Registros Excel'. "
+    "Si la información no está en los registros, debes responder exactamente: "
+    "'No existe información en el registro para esta consulta.' "
+    "Si el usuario hace preguntas generales, saludos o pide recomendaciones técnicas generales, "
+    "puedes responder normalmente sin depender de los registros."
     )
 )
 
@@ -285,11 +288,7 @@ async def chat(
             contexto_sheet = memoria_contexto_sheet[session_id]
 
         # 🔴 BLOQUEO ANTI-ALUCINACIÓN
-        if not contexto_sheet:
-            return {
-                "respuesta": "No existe información en el registro para esta consulta.",
-                "tokens_usados": 0
-            }
+        #if not contexto_sheet:return {"respuesta": "No existe información en el registro para esta consulta.","tokens_usados": 0}
 
         historial = memoria_conversacion[session_id]
         historial_txt = "\n".join(
@@ -297,7 +296,9 @@ async def chat(
         )
 
         # -------- PROMPT RESTRICTIVO --------
-        prompt = f"""
+
+        if contexto_sheet:
+         prompt = f"""
 Responde únicamente utilizando la información exacta contenida en la sección 'Registros Excel'.
 No agregues información externa.
 Si algo no está explícitamente en los registros, responde:
@@ -311,6 +312,17 @@ Registros Excel:
 
 Usuario: {texto}
 """
+        else:
+         prompt = f"""
+         Responde como asistente técnico experto en mantenimiento industrial.
+         Si la pregunta es general, responde normalmente.
+         No inventes datos específicos de órdenes o registros.
+
+         Historial:
+         {historial_txt}
+
+          Usuario: {texto}
+          """
 
         response = model.generate_content(prompt)
 
