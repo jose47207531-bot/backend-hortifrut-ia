@@ -15,34 +15,92 @@ import re
 import time
 import pdfplumber
 from docx import Document
+from core.analytics import ejecutar_analisis
+from core.rag import buscar_en_sheet, obtener_dataframe
+from core.rag import normalizar
 
 
-STOPWORDS = [
-    "que", "hubo", "en", "la", "el", "los", "las",
-    "de", "del", "al", "y", "o", "un", "una",
-    "hay", "existe", "trabajo", "trabajos",
-    "línea", "linea", "por", "para", "con"
-]
-
-def limpiar_query(query):
-    palabras = query.lower().split()
-    palabras_filtradas = [p for p in palabras if p not in STOPWORDS]
-    return normalizar(" ".join(palabras_filtradas))
-
-# ==========================================
-# NORMALIZADOR
-# ==========================================
-
-def normalizar(texto):
+def es_consulta_tecnica(texto):
     if not texto:
-        return ""
-    texto = str(texto).lower()
-    texto = "".join(
-        c for c in unicodedata.normalize('NFD', texto)
-        if unicodedata.category(c) != 'Mn'
+        return False
+
+    texto = texto.lower()
+
+    palabras_tecnicas = [
+        "orden", "trabajo", "tecnico", "técnico",
+        "fecha", "equipo", "status", "linea",
+        "línea", "mantenimiento", "falla",
+        "registro", "intervino", "stock", "repuestos", "trabajador"
+    ]
+
+    # Detectar número largo (posible número de orden)
+    if re.search(r'\d{4,}', texto):
+        return True
+
+    # Detectar palabra técnica
+    for palabra in palabras_tecnicas:
+        if palabra in texto:
+            return True
+
+    return False
+
+def es_pregunta_analitica(texto):
+    if not texto:
+        return False
+
+    texto = texto.lower()
+
+    palabras = [
+        "recomienda",
+        "recomendacion",
+        "evitar",
+        "prevenir",
+        "mejorar",
+        "analiza",
+        "analizar",
+        "tendencia",
+        "patron",
+        "patrón",
+        "indicador",
+        "optimizar"
+    ]
+
+    return any(p in texto for p in palabras)
+
+# ==========================================
+# ANALISIS DINAMICO DE ENTIDAD
+# ==========================================
+
+def analizar_entidad(df, texto_usuario):
+    if df is None or texto_usuario is None:
+        return None
+
+    texto_norm = normalizar(texto_usuario)
+
+    mask = df.astype(str).apply(
+        lambda col: col.str.contains(texto_norm, case=False, na=False)
     )
-    texto = re.sub(r'[^a-z0-9\s]', '', texto)
-    return texto.strip()
+
+    df_filtrado = df[mask.any(axis=1)]
+
+    if df_filtrado.empty:
+        return None
+
+    total_registros = len(df_filtrado)
+
+    falla_frecuente = None
+    if "DESCRIPCIÓN DEL TRABAJO" in df_filtrado.columns:
+        falla_frecuente = (
+            df_filtrado["DESCRIPCIÓN DEL TRABAJO"]
+            .value_counts()
+            .idxmax()
+        )
+
+    return {
+        "total": total_registros,
+        "falla_frecuente": falla_frecuente
+    }
+
 
 # ==========================================
 # CONFIGURACIÓN GEMINI
@@ -108,149 +166,6 @@ def extraer_de_excel_adjunto(bytes_file):
 
 
 # ==========================================
-# BÚSQUEDA INTELIGENTE EN GOOGLE SHEET
-# ==========================================
-
-def buscar_en_sheet(query):
-    global cache_excel
-
-    try:
-        # ==========================================
-        # 1️⃣ ACTUALIZAR CACHE CADA 5 MINUTOS
-        # ==========================================
-        if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
-
-            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
-
-            df_raw = pd.read_csv(
-                io.BytesIO(res.content),
-                encoding="utf-8",
-                sep=None,
-                engine="python"
-            ).fillna("")
-
-            # Formatear fecha si existe
-            col_fecha = "FECHA (DÍA 01)"
-            if col_fecha in df_raw.columns:
-                df_raw[col_fecha] = pd.to_datetime(
-                    df_raw[col_fecha], errors='coerce'
-                ).dt.strftime('%d-%m-%Y')
-
-            df_raw = df_raw.astype(str).replace(r'\.0$', '', regex=True)
-
-            # ==========================================
-            # 2️⃣ CREAR COLUMNA DE BÚSQUEDA UNIFICADA
-            # ==========================================
-            df_raw["busqueda"] = (
-                df_raw.astype(str)
-                .agg(' '.join, axis=1)
-                .apply(normalizar)
-            )
-
-            # ==========================================
-            # 3️⃣ CREAR MODELO TF-IDF
-            # ==========================================
-            vectorizer = TfidfVectorizer(
-            ngram_range=(1,2),   # detecta frases como "linea belando"
-            min_df=1,
-            sublinear_tf=True)
-            tfidf_matrix = vectorizer.fit_transform(df_raw["busqueda"])
-
-            # Guardar en cache
-            cache_excel["df"] = df_raw
-            cache_excel["vectorizer"] = vectorizer
-            cache_excel["tfidf_matrix"] = tfidf_matrix
-            cache_excel["last_update"] = time.time()
-
-        # ==========================================
-        # 4️⃣ RECUPERAR DEL CACHE
-        # ==========================================
-        df = cache_excel["df"]
-        vectorizer = cache_excel["vectorizer"]
-        tfidf_matrix = cache_excel["tfidf_matrix"]
-
-                # ==========================================
-        # 🔢 DETECTAR BÚSQUEDA NUMÉRICA (ORDEN)
-        # ==========================================
-
-        query_solo_num = re.sub(r'[^0-9]', '', str(query))
-
-        if len(query_solo_num) >= 4:  # mínimo 4 dígitos para evitar ruido
-
-            mask_numerica = df.astype(str).apply(
-                lambda col: col.str.contains(query_solo_num, na=False)
-            )
-
-            coincidencias = df[mask_numerica.any(axis=1)]
-
-            if not coincidencias.empty:
-
-                columnas_importantes = [
-                    "N° DE ORDEN",
-                    "FECHA (DÍA 01)",
-                    "DESCRIPCIÓN DEL TRABAJO",
-                    "STATUS 1",
-                    "DIA 1) TEC. N° 01"
-                ]
-
-                columnas_validas = [
-                    c for c in columnas_importantes if c in coincidencias.columns
-                ]
-
-                return coincidencias[columnas_validas].head(15).to_markdown(index=False)
-
-        # ==========================================
-        # 5️⃣ LIMPIAR CONSULTA
-        # ==========================================
-        query_limpia = limpiar_query(query)
-        
-
-        if not query_limpia.strip():
-            return ""
-
-        query_normalizada = normalizar(query_limpia)
-
-        
-
-        # ==========================================
-        # 6️⃣ TRANSFORMAR QUERY A VECTOR
-        # ==========================================
-        query_vec = vectorizer.transform([query_normalizada])
-
-        similitudes = cosine_similarity(query_vec, tfidf_matrix).flatten()
-
-        # ==========================================
-        # 7️⃣ OBTENER TOP 15 RESULTADOS
-        # ==========================================
-        top_indices = similitudes.argsort()[-15:][::-1]
-
-        resultado = df.iloc[top_indices]
-
-        # Filtrar solo si similitud > 0
-        threshold = 0.1
-        resultado = resultado[similitudes[top_indices] > threshold]
-
-        if resultado.empty:
-            return ""
-
-        columnas_importantes = [
-            "N° DE ORDEN",
-            "FECHA (DÍA 01)",
-            "DESCRIPCIÓN DEL TRABAJO",
-            "STATUS 1",
-            "DIA 1) TEC. N° 01"
-        ]
-
-        columnas_validas = [
-            c for c in columnas_importantes if c in resultado.columns
-        ]
-
-        return resultado[columnas_validas].head(15).to_markdown(index=False)
-
-    except Exception as e:
-        print("Error búsqueda TF-IDF:", e)
-        return ""
-# ==========================================
 # ENDPOINT PRINCIPAL
 # ==========================================
 
@@ -265,6 +180,7 @@ async def chat(
         texto_extraido = ""
 
         # -------- PROCESAMIENTO DE ARCHIVO --------
+        
         if archivo:
             mimetype = archivo.content_type
             bytes_file = await archivo.read()
@@ -275,16 +191,55 @@ async def chat(
                 texto_extraido = extraer_de_docx(bytes_file)
             elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
                 texto_extraido = extraer_de_excel_adjunto(bytes_file)
+        # Si se extrajo texto del archivo, lo agregamos a la consulta
+        if texto_extraido:
+         texto = (texto or "") + "\n\nContenido del archivo:\n" + texto_extraido
 
-        # -------- BÚSQUEDA EN GOOGLE SHEET --------
-        contexto_sheet = buscar_en_sheet(texto or "")
+        # -------- CLASIFICADOR ANTES DEL RAG --------
+        usar_excel = es_consulta_tecnica(texto)
+        es_analitica = es_pregunta_analitica(texto)
+        df = obtener_dataframe()
+        # ==============================
+        # 🔥 MODO ANALÍTICO AVANZADO
+        # ==============================
+        analisis = None
+
+        if es_analitica and df is not None:
+         analisis = ejecutar_analisis(df, texto)
+
+        if analisis is not None:
+
+         resumen = f"Resultado analítico detectado: {analisis}"
+
+         prompt = f"""
+         Eres un experto en mantenimiento industrial.
+
+         Con base en el siguiente resultado analítico real,
+         interpreta los datos y genera conclusiones profesionales
+         y recomendaciones preventivas si corresponde.
+
+         Datos:
+         {resumen}
+
+         Usuario: {texto}
+         """
+
+         response = model.generate_content(prompt)
+         usage = response.usage_metadata
+
+        else:
+       
+         if usar_excel:
+          contexto_sheet = buscar_en_sheet(texto or "")
+         else:
+          contexto_sheet = ""
 
 # 🔵 Si encontró algo nuevo, lo guardamos
         if contexto_sheet:
            memoria_contexto_sheet[session_id] = contexto_sheet
-        else:
+        
     # 🔵 Si no encontró nada pero hay contexto previo, lo reutilizamos
-           if session_id in memoria_contexto_sheet:
+        elif session_id in memoria_contexto_sheet:
             contexto_sheet = memoria_contexto_sheet[session_id]
 
         # 🔴 BLOQUEO ANTI-ALUCINACIÓN
