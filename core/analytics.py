@@ -17,6 +17,19 @@ def normalizar(texto):
     )
     return texto
 
+def detectar_equipo_desde_texto(df, texto):
+
+    texto = normalizar(texto)
+
+    if "CODIGO_EXTRAIDO" not in df.columns:
+        return None
+
+    coincidencias = df[df["CODIGO_EXTRAIDO"].str.contains(texto, na=False)]
+
+    if not coincidencias.empty:
+        return coincidencias["CODIGO_EXTRAIDO"].iloc[0]
+
+    return None
 
 # ==========================================
 # DETECTOR DE TIPO DE PREGUNTA ANALITICA
@@ -40,6 +53,30 @@ def detectar_tipo_analisis(texto):
 
     return "general"
 
+def generar_analisis_tecnico_avanzado(df, consulta):
+
+    if df is None:
+        return "No hay datos históricos cargados."
+
+    # Filtrar descripciones similares
+    filtro = df["DESCRIPCIÓN DEL TRABAJO"].str.contains(
+        consulta, case=False, na=False
+    )
+
+    df_filtrado = df[filtro]
+
+    if df_filtrado.empty:
+        return "No se encontraron eventos históricos similares."
+
+    # Contar tipos de intervención
+    conteo = df_filtrado["DESCRIPCIÓN DEL TRABAJO"].value_counts().head(3)
+
+    respuesta = "Basado en historial, las intervenciones más frecuentes son:\n\n"
+
+    for desc, cantidad in conteo.items():
+        respuesta += f"- {desc} ({cantidad} veces)\n"
+
+    return respuesta
 
 # ==========================================
 # MOTOR ANALITICO PRINCIPAL
@@ -95,18 +132,28 @@ def ejecutar_analisis(df, texto):
     # ==============================
     elif tipo == "equipo":
 
-        col_desc = "DESCRIPCIÓN DEL TRABAJO"
+     col_equipo = "CODIGO_EXTRAIDO"
 
-        if col_desc in df.columns:
+    if col_equipo in df.columns:
 
-            top = (
-                df[col_desc]
-                .value_counts()
-                .head(5)
-            )
+        equipo_detectado = detectar_equipo_desde_texto(df, texto)
 
-            resultado["tipo"] = "incidencias_equipo"
-            resultado["data"] = top.to_dict()
+        if equipo_detectado:
+
+            df_filtrado = df[df[col_equipo] == equipo_detectado]
+
+        else:
+            df_filtrado = df
+
+        top = (
+            df_filtrado["DESCRIPCIÓN DEL TRABAJO"]
+            .value_counts()
+            .head(5)
+        )
+
+        resultado["tipo"] = "incidencias_equipo"
+        resultado["equipo"] = equipo_detectado
+        resultado["data"] = top.to_dict()
 
     # ==============================
     # TENDENCIA MENSUAL

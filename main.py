@@ -15,7 +15,7 @@ import re
 import time
 import pdfplumber
 from docx import Document
-from core.analytics import ejecutar_analisis
+from core.analytics import ejecutar_analisis, generar_analisis_tecnico_avanzado
 from core.rag import buscar_en_sheet, obtener_dataframe
 from core.rag import normalizar
 
@@ -118,7 +118,7 @@ model = genai.GenerativeModel(
         "response_mime_type": "text/plain",
     },
     system_instruction=(
-       "Eres un asistente técnico experto en gestión de mantenimiento industrial. "
+       "Eres un ingeniero senior de mantenimiento experto en gestión de mantenimiento industrial. "
     "Responde siempre en español. "
     "Cuando el usuario consulte sobre órdenes, equipos, técnicos, fechas o trabajos, "
     "solo puedes usar la información contenida en 'Registros Excel'. "
@@ -146,7 +146,7 @@ cache_excel = {
     "tfidf_matrix": None
 }
 
-GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oEVKH1SxHDJtwSx9y3sy1Ui12CqvCWdRTb9bEe_w4D8/export?format=csv&gid=1960130423"
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/12z2M2H_iE6MAKjgPbDwmt2HaJ7ZQRfx_PL0jDxbQnS8/edit?gid=955581654#gid=955581654"
 
 # ==========================================
 # EXTRACTORES LOCALES
@@ -206,23 +206,43 @@ async def chat(
 
         if es_analitica and df is not None:
          analisis = ejecutar_analisis(df, texto)
+         analisis_tecnico = generar_analisis_tecnico_avanzado(df, texto)
 
         if analisis is not None:
 
          resumen = f"Resultado analítico detectado: {analisis}"
 
          prompt = f"""
-         Eres un experto en mantenimiento industrial.
+          Eres un ingeniero senior de mantenimiento experto en una planta industrial.
 
-         Con base en el siguiente resultado analítico real,
-         interpreta los datos y genera conclusiones profesionales
-         y recomendaciones preventivas si corresponde.
+          Tu objetivo NO es solo responder, sino ayudar a tomar decisiones operativas.
 
-         Datos:
+          Tienes dos fuentes de información:
+
+         1) Datos analíticos:
          {resumen}
 
+         2) Historial real:
+         {analisis_tecnico}
+
+         Debes generar una respuesta estructurada con:
+
+         🔍 Hallazgos:
+         - Qué está ocurriendo
+         - Qué patrones detectas
+
+         ⚠️ Riesgos:
+         - Qué podría fallar si continúa la tendencia
+
+         🛠️ Recomendaciones:
+         - Acciones concretas
+         - Tipo de mantenimiento (preventivo, correctivo, predictivo)
+
+         📊 Insight técnico:
+         - Interpretación profesional (como ingeniero)
+
          Usuario: {texto}
-         """
+          """
 
          response = model.generate_content(prompt)
          usage = response.usage_metadata
@@ -254,7 +274,7 @@ async def chat(
 
         if contexto_sheet:
          prompt = f"""
-Eres un analista experto en gestión de mantenimiento industrial.
+Eres un ingeniero senior de mantenimiento en gestión de mantenimiento industrial.
 
 Debes usar EXCLUSIVAMENTE la información contenida en 'Registros Excel'.
 
