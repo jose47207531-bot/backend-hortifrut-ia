@@ -1,23 +1,19 @@
 import google.generativeai as genai
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from collections import defaultdict
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-import numpy as np
+from core.insights import obtener_insights, obtener_columna_principal
 import os
 import pandas as pd
 import io
-import requests
 import unicodedata
 import re
-import time
 import pdfplumber
 from docx import Document
 from core.analytics import ejecutar_analisis, generar_analisis_tecnico_avanzado
 from core.rag import buscar_en_sheet, obtener_dataframe
 from core.rag import normalizar
+from core.insights import obtener_insights
 
 
 def es_consulta_tecnica(texto):
@@ -30,10 +26,17 @@ def es_consulta_tecnica(texto):
         "orden", "trabajo", "tecnico", "técnico",
         "fecha", "equipo", "status", "linea",
         "línea", "mantenimiento", "falla",
-        "registro", "intervino", "stock", "repuestos", "trabajador"
+        "registro", "intervino", "stock",
+        "repuestos", "trabajador",
+        "paso", "pasó", "historial", "ocurrio",
+        "ocurrió"
     ]
 
-    # Detectar número largo (posible número de orden)
+    # 🔥 Detectar códigos tipo HO-233-EVNH3
+    if re.search(r'[a-z]{2,}-?\d+', texto):
+        return True
+
+    # Detectar números largos (orden)
     if re.search(r'\d{4,}', texto):
         return True
 
@@ -42,7 +45,7 @@ def es_consulta_tecnica(texto):
         if palabra in texto:
             return True
 
-    return False
+    return any(p in texto for p in palabras_tecnicas)
 
 def es_pregunta_analitica(texto):
     if not texto:
@@ -61,8 +64,12 @@ def es_pregunta_analitica(texto):
         "tendencia",
         "patron",
         "patrón",
-        "indicador",
-        "optimizar"
+      "indicador",
+        "optimizar",
+        "que paso",
+        "que pasó",
+        "historial",
+        "comportamiento"
     ]
 
     return any(p in texto for p in palabras)
@@ -100,7 +107,30 @@ def analizar_entidad(df, texto_usuario):
         "total": total_registros,
         "falla_frecuente": falla_frecuente
     }
+# ==========================================
+# DETECTOR INTELIGENTE DE EQUIPO
+# ==========================================
+def detectar_equipo_en_texto(df, texto):
 
+    if df is None or not texto:
+        return None
+
+    texto = texto.lower()
+
+    for _, row in df.iterrows():
+
+        codigo = str(row.get("CODIGO_EXTRAIDO", "")).lower()
+        desc = str(row.get("DESCRIPCION_EXTRAIDA", "")).lower()
+
+        # 🔥 prioridad: codigo
+        if codigo and codigo in texto:
+            return row.get("CODIGO_EXTRAIDO")
+
+        # 🔥 fallback: descripcion → retorna codigo
+        if desc and desc in texto:
+            return row.get("CODIGO_EXTRAIDO")
+
+    return None
 
 # ==========================================
 # CONFIGURACIÓN GEMINI
@@ -139,14 +169,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 memoria_conversacion = defaultdict(list)
 # 🔵 NUEVA MEMORIA PARA CONTEXTO DEL EXCEL
 memoria_contexto_sheet = {}
-cache_excel = {
-    "df": None,
-    "last_update": 0,
-    "vectorizer": None,
-    "tfidf_matrix": None
-}
-
-GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/12z2M2H_iE6MAKjgPbDwmt2HaJ7ZQRfx_PL0jDxbQnS8/edit?gid=955581654#gid=955581654"
 
 # ==========================================
 # EXTRACTORES LOCALES
@@ -175,7 +197,7 @@ async def chat(
     session_id: str = Form("default_session"),
     archivo: UploadFile = File(None)
 ):
-    try:
+    try:    
 
         texto_extraido = ""
 
@@ -198,45 +220,167 @@ async def chat(
         # -------- CLASIFICADOR ANTES DEL RAG --------
         usar_excel = es_consulta_tecnica(texto)
         es_analitica = es_pregunta_analitica(texto)
+
         df = obtener_dataframe()
-        # ==============================
-        # 🔥 MODO ANALÍTICO AVANZADO
-        # ==============================
+        insights = obtener_insights()
+        col_equipo = obtener_columna_principal(df)
+
+        equipo_detectado = detectar_equipo_en_texto(df, texto)
+
+        
+        # ==========================================
+        # 🔮 PREDICCIÓN DE RIESGO (SIN IA)
+        # ==========================================
+        if any(p in texto.lower() for p in ["riesgo", "fallar", "falla", "probabilidad"]):
+
+           if equipo_detectado and "riesgo_equipos" in insights:
+
+              data = insights["riesgo_equipos"].get(equipo_detectado)
+
+              if data:
+                 return {
+                "respuesta": f"""
+        Equipo: {equipo_detectado}
+
+        Nivel de riesgo: {data['riesgo']}
+        Score: {data['score']}
+
+        Motivos:
+         - {"\n- ".join(data['motivo'])}
+        """,
+                "tokens_usados": 0
+            }
+
+        # ==========================================
+        # 🚨 DETECCIÓN DE ANOMALÍAS (SIN IA)
+        # ==========================================
+        if any(p in texto.lower() for p in ["anomalia", "anomalía", "raro", "fuera de lo normal"]):
+
+            anomalias = insights.get("anomalias", {})
+
+            if equipo_detectado:
+                data = anomalias.get(equipo_detectado)
+
+                if data:
+                    return {
+                       "respuesta": f"""
+       🚨 ANOMALÍA DETECTADA
+
+        Equipo: {equipo_detectado}
+
+        Tipo: {data['tipo']}
+        Nivel: {data['nivel']}
+
+        Valor actual: {data['valor_actual']}
+        Promedio histórico: {data['promedio']}
+        Desviación estándar: {data['desviacion']}
+
+        Z-score: {data['z_score']}
+        """,
+                "tokens_usados": 0
+            }
+
+            else:
+                # Mostrar todas las anomalías
+                if not anomalias:
+                    return {
+                "respuesta": "No se detectaron anomalías en los equipos.",
+                "tokens_usados": 0}
+
+                resumen = ""
+
+                for eq, data in list(anomalias.items())[:10]:
+                    resumen += f"""
+            - {eq} | Nivel: {data['nivel']} | Z-score: {data['z_score']}
+            """
+
+                return {
+            "respuesta": f"""
+       🚨 Equipos con comportamiento anormal:
+
+        {resumen}
+        """,
+            "tokens_usados": 0}
+
+
+        # ==========================================
+        # 📊 RESPUESTA DIRECTA POR EQUIPO (SIN IA)
+        # ==========================================
+        if equipo_detectado and df is not None:
+
+           df_equipo = df[
+              (df[col_equipo].astype(str) == str(equipo_detectado)) |
+              (df["DESCRIPCION_EXTRAIDA"].astype(str).str.contains(str(equipo_detectado), case=False, na=False)) |
+              (df["DESCRIPCIÓN DEL TRABAJO"].astype(str).str.contains(str(equipo_detectado), case=False, na=False))
+             ]  
+
+           if not df_equipo.empty:
+
+              total = len(df_equipo)
+              col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_equipo.columns else "DESCRIPCIÓN DEL TRABAJO"
+              trabajos = df_equipo[col_texto].value_counts()
+
+              return {
+                   "respuesta": f"""
+        Equipo detectado: {equipo_detectado}
+
+        Total intervenciones: {total}
+
+        Trabajos realizados:
+        {trabajos.to_string()}
+        """,
+                    "tokens_usados": 0
+                }
+
+        # ==========================================
+        # 🔥 MODO ANALÍTICO
+        # ==========================================
         analisis = None
 
         if es_analitica and df is not None:
-         analisis = ejecutar_analisis(df, texto)
-         analisis_tecnico = generar_analisis_tecnico_avanzado(df, texto)
+             analisis = ejecutar_analisis(df, texto)
+             analisis_tecnico = generar_analisis_tecnico_avanzado(df, texto)
 
         if analisis is not None:
 
-         resumen = f"Resultado analítico detectado: {analisis}"
+           tipo_analisis = analisis.get("tipo")
 
-         prompt = f"""
-          Eres un ingeniero senior de mantenimiento experto en una planta industrial.
+           resumen = f"Resultado analítico detectado: {analisis}"
+         
+           prompt = f"""
+           Eres un ingeniero senior de mantenimiento experto en una planta industrial.
+           Tu objetivo es ayudar en la toma de decisiones operativas y estratégicas.
 
-          Tu objetivo NO es solo responder, sino ayudar a tomar decisiones operativas.
+           Tipo de análisis detectado: {tipo_analisis}
 
-          Tienes dos fuentes de información:
+           Tu objetivo NO es solo responder, sino ayudar a tomar decisiones operativas.
 
-         1) Datos analíticos:
-         {resumen}
+           Tienes dos fuentes de información:
 
-         2) Historial real:
-         {analisis_tecnico}
+           1) Datos analíticos:
+           {resumen}
 
-         Debes generar una respuesta estructurada con:
+           2) Historial real:
+           {analisis_tecnico}
 
-         🔍 Hallazgos:
+           3) Insights globales del sistema:
+           {insights}
+
+           Debes generar una respuesta estructurada con:
+
+           🔍 Hallazgos:
          - Qué está ocurriendo
-         - Qué patrones detectas
+         - Qué patrones, tendencias o comportamientos detectas
 
          ⚠️ Riesgos:
-         - Qué podría fallar si continúa la tendencia
+         - Qué podría fallar o empeorar si continúa la tendencia
 
          🛠️ Recomendaciones:
          - Acciones concretas
          - Tipo de mantenimiento (preventivo, correctivo, predictivo)
+
+         📈 Nivel de criticidad:
+         - Bajo / Medio / Alto
 
          📊 Insight técnico:
          - Interpretación profesional (como ingeniero)
@@ -244,8 +388,12 @@ async def chat(
          Usuario: {texto}
           """
 
-         response = model.generate_content(prompt)
-         usage = response.usage_metadata
+           response = model.generate_content(prompt)
+           usage = response.usage_metadata
+
+           return {
+           "respuesta": response.text,
+           "tokens_usados": usage.total_token_count}
 
         else:
        

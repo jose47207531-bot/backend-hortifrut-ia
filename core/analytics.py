@@ -1,6 +1,19 @@
 import pandas as pd
 import re
 import unicodedata
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+
+
+# ==========================================
+# 🔥 FUNCIÓN NUEVA (CLAVE)
+# ==========================================
+def obtener_columna_principal(df):
+    if "CODIGO_EXTRAIDO" in df.columns:
+        return "CODIGO_EXTRAIDO"
+    if "DESCRIPCION_EXTRAIDA" in df.columns:
+        return "DESCRIPCION_EXTRAIDA"
+    return None
 
 
 # ==========================================
@@ -17,19 +30,58 @@ def normalizar(texto):
     )
     return texto
 
+
+# ==========================================
+# 🔥 DETECCIÓN DE EQUIPO MEJORADA
+# ==========================================
+
 def detectar_equipo_desde_texto(df, texto):
 
     texto = normalizar(texto)
 
-    if "CODIGO_EXTRAIDO" not in df.columns:
+    col_principal = obtener_columna_principal(df)
+
+    if col_principal is None:
         return None
 
-    coincidencias = df[df["CODIGO_EXTRAIDO"].str.contains(texto, na=False)]
+    # 🔹 1. Búsqueda directa por código
+    coincidencias = df[
+        df[col_principal].astype(str).str.contains(texto, na=False)
+    ]
 
     if not coincidencias.empty:
-        return coincidencias["CODIGO_EXTRAIDO"].iloc[0]
+        return coincidencias[col_principal].iloc[0]
+
+    # 🔹 2. Búsqueda por descripción
+    if "DESCRIPCION_EXTRAIDA" in df.columns:
+
+        df_temp = df.copy()
+        df_temp["desc_norm"] = df_temp["DESCRIPCION_EXTRAIDA"].apply(normalizar)
+
+        match = df_temp[
+            df_temp["desc_norm"].str.contains(texto, na=False)
+        ]
+
+        if not match.empty:
+            return match[col_principal].iloc[0]
+
+    # 🔹 3. Búsqueda en TEXTO COMPLETO (🔥 NUEVO)
+    col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df.columns else "DESCRIPCIÓN DEL TRABAJO"
+
+    if col_texto in df.columns:
+
+        df_temp = df.copy()
+        df_temp["texto_norm"] = df_temp[col_texto].apply(normalizar)
+
+        match = df_temp[
+            df_temp["texto_norm"].str.contains(texto, na=False)
+        ]
+
+        if not match.empty:
+            return match[col_principal].iloc[0]
 
     return None
+
 
 # ==========================================
 # DETECTOR DE TIPO DE PREGUNTA ANALITICA
@@ -53,23 +105,30 @@ def detectar_tipo_analisis(texto):
 
     return "general"
 
+
+# ==========================================
+# 🔥 ANALISIS TECNICO MEJORADO
+# ==========================================
+
 def generar_analisis_tecnico_avanzado(df, consulta):
 
     if df is None:
         return "No hay datos históricos cargados."
 
-    # Filtrar descripciones similares
-    filtro = df["DESCRIPCIÓN DEL TRABAJO"].str.contains(
-        consulta, case=False, na=False
+    consulta = normalizar(consulta)
+
+    filtro = df.astype(str).apply(
+        lambda col: col.str.contains(consulta, case=False, na=False)
     )
 
-    df_filtrado = df[filtro]
+    df_filtrado = df[filtro.any(axis=1)]
 
     if df_filtrado.empty:
         return "No se encontraron eventos históricos similares."
 
-    # Contar tipos de intervención
-    conteo = df_filtrado["DESCRIPCIÓN DEL TRABAJO"].value_counts().head(3)
+    col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_filtrado.columns else "DESCRIPCIÓN DEL TRABAJO"
+
+    conteo = df_filtrado[col_texto].value_counts()
 
     respuesta = "Basado en historial, las intervenciones más frecuentes son:\n\n"
 
@@ -77,6 +136,7 @@ def generar_analisis_tecnico_avanzado(df, consulta):
         respuesta += f"- {desc} ({cantidad} veces)\n"
 
     return respuesta
+
 
 # ==========================================
 # MOTOR ANALITICO PRINCIPAL
@@ -91,6 +151,8 @@ def ejecutar_analisis(df, texto):
 
     resultado = {}
 
+    col_principal = obtener_columna_principal(df)
+
     # ==============================
     # ANALISIS POR TECNICO
     # ==============================
@@ -100,11 +162,7 @@ def ejecutar_analisis(df, texto):
 
         if col_tecnico in df.columns:
 
-            top = (
-                df[col_tecnico]
-                .value_counts()
-                .head(5)
-            )
+            top = df[col_tecnico].value_counts()
 
             resultado["tipo"] = "ranking_tecnicos"
             resultado["data"] = top.to_dict()
@@ -114,15 +172,11 @@ def ejecutar_analisis(df, texto):
     # ==============================
     elif tipo == "falla":
 
-        col_desc = "DESCRIPCIÓN DEL TRABAJO"
+        col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df.columns else "DESCRIPCIÓN DEL TRABAJO"
 
-        if col_desc in df.columns:
+        if col_texto in df.columns:
 
-            top = (
-                df[col_desc]
-                .value_counts()
-                .head(5)
-            )
+            top = df[col_texto].value_counts()
 
             resultado["tipo"] = "ranking_fallas"
             resultado["data"] = top.to_dict()
@@ -132,28 +186,29 @@ def ejecutar_analisis(df, texto):
     # ==============================
     elif tipo == "equipo":
 
-     col_equipo = "CODIGO_EXTRAIDO"
+        if col_principal is not None:
 
-    if col_equipo in df.columns:
+            equipo_detectado = detectar_equipo_desde_texto(df, texto)
 
-        equipo_detectado = detectar_equipo_desde_texto(df, texto)
+            if equipo_detectado:
+                df_filtrado = df[df[col_principal] == equipo_detectado].copy()
+            else:
+                df_filtrado = df.copy()
 
-        if equipo_detectado:
+            if "FECHA (DÍA 01)" in df_filtrado.columns:
+                df_filtrado["FECHA (DÍA 01)"] = pd.to_datetime(
+                    df_filtrado["FECHA (DÍA 01)"], errors='coerce'
+                )
 
-            df_filtrado = df[df[col_equipo] == equipo_detectado]
+            col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_filtrado.columns else "DESCRIPCIÓN DEL TRABAJO"
 
-        else:
-            df_filtrado = df
+            conteo = df_filtrado[col_texto].value_counts()
 
-        top = (
-            df_filtrado["DESCRIPCIÓN DEL TRABAJO"]
-            .value_counts()
-            .head(5)
-        )
-
-        resultado["tipo"] = "incidencias_equipo"
-        resultado["equipo"] = equipo_detectado
-        resultado["data"] = top.to_dict()
+            resultado["tipo"] = "incidencias_equipo"
+            resultado["equipo"] = equipo_detectado
+            resultado["total"] = len(df_filtrado)
+            resultado["tipos_trabajo"] = len(conteo)
+            resultado["data"] = conteo.to_dict()
 
     # ==============================
     # TENDENCIA MENSUAL
