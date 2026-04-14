@@ -88,16 +88,17 @@ def buscar_en_sheet(query):
 
     if match_codigo:
         codigo = match_codigo.group().strip()
-        print("CODIGO DETECTADO:", codigo)
+        print("CODIGO DETECTADO:",codigo)
 
         # 🔥 NORMALIZAR EL CÓDIGO (CLAVE)
-        codigo_norm = normalizar(codigo)
+        codigo_norm = normalizar(codigo).replace(" ", "")
+        print("CODIGO NORMALIZADO:", codigo_norm)
 
         df_temp = df.copy()
 
         # 🔥 Normalizar TODO el dataframe
         for col in df_temp.columns:
-            df_temp[col] = df_temp[col].astype(str).apply(normalizar)
+            df_temp[col] = df_temp[col].astype(str).apply(lambda x: normalizar(x).replace(" ", ""))
 
         mask = df_temp.apply(
          lambda col: col.str.contains(codigo_norm, na=False)
