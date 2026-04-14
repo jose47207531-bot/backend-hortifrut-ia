@@ -42,30 +42,33 @@ def cargar_datos():
     global cache_excel
 
     if cache_excel["df"] is None:
-        guardar_insights(df)
+        
+        try:
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+            res.raise_for_status()
 
-        res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+            df = pd.read_csv(
+             io.BytesIO(res.content),
+             encoding="utf-8",
+             sep=None,
+             engine="python"
+             ).fillna("")
 
-        df = pd.read_csv(
-            io.BytesIO(res.content),
-            encoding="utf-8",
-            sep=None,
-            engine="python"
-        ).fillna("")
+            # Formatear fecha
+            col_fecha = "FECHA (DÍA 01)"
+            if col_fecha in df.columns:
+              df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce', dayfirst=True)
 
-        # Formatear fecha
-        col_fecha = "FECHA (DÍA 01)"
-        if col_fecha in df.columns:
-            df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce', dayfirst=True)
+            df = df.astype(str).replace(r'\.0$', '', regex=True)
 
-        df = df.astype(str).replace(r'\.0$', '', regex=True)
+            cache_excel["df"] = df
+            cache_excel["last_update"] = time.time()
+            # 🔥 GENERAR INSIGHTS AUTOMÁTICOS
+            guardar_insights(df)
 
-        cache_excel["df"] = df
-        cache_excel["last_update"] = time.time()
-
-        # 🔥 GENERAR INSIGHTS AUTOMÁTICOS
-        guardar_insights(df)
-
+        except Exception as e:
+            print(f"Error al descargar datos del Sheet: {e}")
+            return None        
     return cache_excel["df"]
 
 # ==========================================
