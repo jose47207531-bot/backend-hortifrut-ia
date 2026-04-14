@@ -31,7 +31,7 @@ cache_excel = {
     "last_update": 0
 }
 
-GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/12z2M2H_iE6MAKjgPbDwmt2HaJ7ZQRfx_PL0jDxbQnS8/edit?gid=955581654#gid=955581654"
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/12z2M2H_iE6MAKjgPbDwmt2HaJ7ZQRfx_PL0jDxbQnS8/export?format=csv&gid=955581654"
 
 # ==========================================
 # CARGA DE DATA
