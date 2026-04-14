@@ -130,7 +130,7 @@ def generar_clusters(df, n_clusters=8):
     textos = df[col_texto].fillna("").astype(str)
 
     vectorizer = TfidfVectorizer(
-        stop_words="spanish",
+        stop_words=None,
         ngram_range=(1,2)
     )
 

@@ -72,13 +72,35 @@ def cargar_datos():
 # ==========================================
 
 def buscar_en_sheet(query):
-
     df = cargar_datos()
 
     if df is None or not query:
         return ""
 
     query = str(query)
+
+    # ==========================================
+    # 🔥 DETECCIÓN DE CÓDIGO DE EQUIPO
+    # ==========================================
+
+    match_codigo = re.search( r'\b[a-zA-Z]{2,}-\d{2,}-[a-zA-Z0-9]+(?:\s\d{1,2})?\b',query)
+
+    if match_codigo:
+       codigo = normalizar(match_codigo.group())
+
+       df_temp = df.copy()
+
+       for col in df_temp.columns:
+           df_temp[col] = df_temp[col].astype(str).apply(normalizar)
+
+       mask = df_temp.apply(
+        lambda col: col.str.contains(codigo, na=False))
+
+       resultado = df[mask.any(axis=1)]
+
+       if not resultado.empty:
+          return resultado.head(20).to_markdown(index=False)
+
 
     # 🔢 Búsqueda numérica (órdenes)
     query_num = re.sub(r'[^0-9]', '', query)
@@ -93,35 +115,44 @@ def buscar_en_sheet(query):
             return resultado.head(20).to_markdown(index=False)
 
     # ==========================================
-    # 🔥 NUEVA BÚSQUEDA INTELIGENTE
+    # 🔥 BÚSQUEDA INTELIGENTE POR PALABRAS
     # ==========================================
 
     query_norm = normalizar(query)
 
-    # 🔥 dividir en palabras clave
-    palabras = [p for p in query_norm.split() if len(p) > 2]
+    palabras = [
+       p for p in query_norm.split()
+       if len(p) > 2]
 
     if not palabras:
         return ""
 
     df_temp = df.copy()
 
-    # 🔥 normalizar TODO el dataframe
     for col in df_temp.columns:
-        df_temp[col] = df_temp[col].astype(str).apply(normalizar)
+       df_temp[col] = df_temp[col].astype(str).apply(normalizar)
 
-    mask_total = False
+    mask_total = None
 
     for palabra in palabras:
+
+        # 🔥 evitar que números cortos rompan la búsqueda
+        if palabra.isdigit() and len(palabra) <= 2:
+           continue
+
         mask = df_temp.apply(
             lambda col: col.str.contains(palabra, na=False)
-        )
-        mask_total = mask if isinstance(mask_total, bool) else (mask_total | mask)
+           )
+
+        if mask_total is None:
+           mask_total = mask
+        else:
+           mask_total = mask_total | mask
 
     resultado = df[mask_total.any(axis=1)]
 
     if resultado.empty:
-        return ""
+       return ""
 
     return resultado.head(20).to_markdown(index=False)
 
