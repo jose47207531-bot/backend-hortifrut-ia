@@ -83,18 +83,14 @@ def buscar_en_sheet(query):
     # 🔥 DETECCIÓN DE CÓDIGO DE EQUIPO
     # ==========================================
 
-    match_codigo = re.search( r'\b[a-zA-Z]{2,}-\d{2,}-[a-zA-Z0-9]+(?:\s\d{1,2})?\b',query)
+    match_codigo = re.search(r'\b[a-zA-Z]{2,}-\d{2,}-[a-zA-Z0-9]+(?:\s\d{1,2})?\b',
+    query)
 
     if match_codigo:
-       codigo = normalizar(match_codigo.group())
+       codigo = match_codigo.group().strip()
 
-       df_temp = df.copy()
-
-       for col in df_temp.columns:
-           df_temp[col] = df_temp[col].astype(str).apply(normalizar)
-
-       mask = df_temp.apply(
-        lambda col: col.str.contains(codigo, na=False))
+       mask = df.astype(str).apply(
+           lambda col: col.str.contains(codigo, case=False, na=False))
 
        resultado = df[mask.any(axis=1)]
 
