@@ -80,7 +80,7 @@ def buscar_en_sheet(query):
 
     query = str(query)
 
-    # 🔢 Búsqueda numérica (orden)
+    # 🔢 Búsqueda numérica (órdenes)
     query_num = re.sub(r'[^0-9]', '', query)
 
     if len(query_num) >= 4:
@@ -92,14 +92,33 @@ def buscar_en_sheet(query):
         if not resultado.empty:
             return resultado.head(20).to_markdown(index=False)
 
-    # 🔍 Búsqueda por texto (en TODAS las columnas)
+    # ==========================================
+    # 🔥 NUEVA BÚSQUEDA INTELIGENTE
+    # ==========================================
+
     query_norm = normalizar(query)
 
-    mask = df.astype(str).apply(
-        lambda col: col.str.contains(query_norm, case=False, na=False)
-    )
+    # 🔥 dividir en palabras clave
+    palabras = [p for p in query_norm.split() if len(p) > 2]
 
-    resultado = df[mask.any(axis=1)]
+    if not palabras:
+        return ""
+
+    df_temp = df.copy()
+
+    # 🔥 normalizar TODO el dataframe
+    for col in df_temp.columns:
+        df_temp[col] = df_temp[col].astype(str).apply(normalizar)
+
+    mask_total = False
+
+    for palabra in palabras:
+        mask = df_temp.apply(
+            lambda col: col.str.contains(palabra, na=False)
+        )
+        mask_total = mask if isinstance(mask_total, bool) else (mask_total | mask)
+
+    resultado = df[mask_total.any(axis=1)]
 
     if resultado.empty:
         return ""
