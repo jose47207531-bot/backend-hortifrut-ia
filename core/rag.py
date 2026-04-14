@@ -41,7 +41,8 @@ def cargar_datos():
 
     global cache_excel
 
-    if cache_excel["df"] is None or (time.time() - cache_excel["last_update"]) > 300:
+    if cache_excel["df"] is None:
+        guardar_insights(df)
 
         res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
 
