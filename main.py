@@ -13,7 +13,7 @@ from docx import Document
 from core.analytics import ejecutar_analisis, generar_analisis_tecnico_avanzado
 from core.rag import buscar_en_sheet, obtener_dataframe
 from core.rag import normalizar
-from core.insights import obtener_insights
+
 
 
 def es_consulta_tecnica(texto):
@@ -110,7 +110,11 @@ def analizar_entidad(df, texto_usuario):
 # ==========================================
 # DETECTOR INTELIGENTE DE EQUIPO
 # ==========================================
+
 def detectar_equipo_en_texto(df, texto):
+
+    if df is None or df.empty:
+      return None
 
     if df is None or not texto:
         return None
@@ -222,8 +226,19 @@ async def chat(
         es_analitica = es_pregunta_analitica(texto)
 
         df = obtener_dataframe()
+        if df is None or df.empty:
+         return {
+          "respuesta": "No se pudo cargar la base de datos.",
+          "tokens_usados": 0}
+
         insights = obtener_insights()
         col_equipo = obtener_columna_principal(df)
+
+        if col_equipo is None:
+          return {
+        "respuesta": "No se encontró columna principal de equipos en la base de datos.",
+        "tokens_usados": 0
+    }
 
         equipo_detectado = detectar_equipo_en_texto(df, texto)
 
