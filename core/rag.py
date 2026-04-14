@@ -87,27 +87,27 @@ def buscar_en_sheet(query):
     query)
 
     if match_codigo:
-        codigo = match_codigo.group().strip()
-        print("CODIGO DETECTADO:",codigo)
+       codigo = match_codigo.group().strip()
+       print("CODIGO DETECTADO:", codigo)
 
-        # 🔥 NORMALIZAR EL CÓDIGO (CLAVE)
-        codigo_norm = normalizar(codigo).replace(" ", "")
-        print("CODIGO NORMALIZADO:", codigo_norm)
+       if "CODIGO_EXTRAIDO" in df.columns:
 
-        df_temp = df.copy()
+            # 🔥 limpiar espacios invisibles del excel
+            df["CODIGO_EXTRAIDO"] = df["CODIGO_EXTRAIDO"].astype(str).str.strip()
 
-        # 🔥 Normalizar TODO el dataframe
-        for col in df_temp.columns:
-            df_temp[col] = df_temp[col].astype(str).apply(lambda x: normalizar(x).replace(" ", ""))
+            # 🔍 print de ejemplos reales del excel
+            print("EJEMPLOS EN EXCEL:", df["CODIGO_EXTRAIDO"].head(10).tolist())
 
-        mask = df_temp.apply(
-         lambda col: col.str.contains(codigo_norm, na=False)
+            mask = df["CODIGO_EXTRAIDO"].str.contains(
+            codigo, case=False, na=False
         )
 
-        resultado = df[mask.any(axis=1)]
+            resultado = df[mask]
 
-        if not resultado.empty:
-           return resultado.head(20).to_markdown(index=False)
+            print("FILAS ENCONTRADAS:", len(resultado))
+   
+            if not resultado.empty:
+              return resultado.head(20).to_markdown(index=False)
      
 
     # 🔢 Búsqueda numérica (órdenes)
@@ -121,6 +121,25 @@ def buscar_en_sheet(query):
 
         if not resultado.empty:
             return resultado.head(20).to_markdown(index=False)
+        
+    # ==========================================
+    # 🔍 BÚSQUEDA POR DESCRIPCIÓN
+    # ==========================================
+
+    if "DESCRIPCION_EXTRAIDA" in df.columns:
+
+         query_norm = normalizar(query)
+
+         df_temp = df.copy()
+
+         df_temp["DESCRIPCION_EXTRAIDA"] = df_temp["DESCRIPCION_EXTRAIDA"].astype(str).apply(normalizar)
+
+         mask = df_temp["DESCRIPCION_EXTRAIDA"].str.contains(query_norm, na=False)
+
+         resultado = df[mask]
+
+         if not resultado.empty:
+           return resultado.head(20).to_markdown(index=False)
 
     # ==========================================
     # 🔥 BÚSQUEDA INTELIGENTE POR PALABRAS
