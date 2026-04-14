@@ -55,7 +55,7 @@ def cargar_datos():
         # Formatear fecha
         col_fecha = "FECHA (DÍA 01)"
         if col_fecha in df.columns:
-            df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce')
+            df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce', dayfirst=True)
 
         df = df.astype(str).replace(r'\.0$', '', regex=True)
 
@@ -87,16 +87,27 @@ def buscar_en_sheet(query):
     query)
 
     if match_codigo:
-       codigo = match_codigo.group().strip()
+        codigo = match_codigo.group().strip()
+        print("CODIGO DETECTADO:", codigo)
 
-       mask = df.astype(str).apply(
-           lambda col: col.str.contains(codigo, case=False, na=False))
+        # 🔥 NORMALIZAR EL CÓDIGO (CLAVE)
+        codigo_norm = normalizar(codigo)
 
-       resultado = df[mask.any(axis=1)]
+        df_temp = df.copy()
 
-       if not resultado.empty:
-          return resultado.head(20).to_markdown(index=False)
+        # 🔥 Normalizar TODO el dataframe
+        for col in df_temp.columns:
+            df_temp[col] = df_temp[col].astype(str).apply(normalizar)
 
+        mask = df_temp.apply(
+         lambda col: col.str.contains(codigo_norm, na=False)
+        )
+
+        resultado = df[mask.any(axis=1)]
+
+        if not resultado.empty:
+           return resultado.head(20).to_markdown(index=False)
+     
 
     # 🔢 Búsqueda numérica (órdenes)
     query_num = re.sub(r'[^0-9]', '', query)
