@@ -74,6 +74,8 @@ def cargar_datos():
 def buscar_en_sheet(query):
     df = cargar_datos()
 
+    print("COLUMNAS DEL DF:", df.columns.tolist())
+
     if df is None or not query:
         return ""
 
@@ -100,11 +102,7 @@ def buscar_en_sheet(query):
             # 🔥 limpiar espacios invisibles del excel
             df["CODIGO_EXTRAIDO"] = df["CODIGO_EXTRAIDO"].astype(str).str.strip()
 
-            # 🔥 PRINT AQUÍ 👇 (ANTES DEL MATCH)
-            print("COMPARANDO:")
-            for val in df["CODIGO_EXTRAIDO"].head(10):
-             print(f"EXCEL: '{val}' | BUSCADO: '{codigo}'")
-
+            
             # 🔍 print de ejemplos reales del excel
             print("EJEMPLOS EN EXCEL:", df["CODIGO_EXTRAIDO"].head(10).tolist())
 
