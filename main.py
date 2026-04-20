@@ -14,6 +14,11 @@ from core.analytics import ejecutar_analisis, generar_analisis_tecnico_avanzado
 from core.rag import buscar_en_sheet, obtener_dataframe, formatear_contexto
 from core.rag import normalizar
 from core.insights import obtener_insights
+from core.rag import cargar_datos
+
+print("🚀 Cargando datos al iniciar servidor...")
+cargar_datos()
+print("✅ Datos cargados")
 
 
 def es_consulta_tecnica(texto):

@@ -74,8 +74,17 @@ def cargar_datos():
     if cache_excel["df"] is None or (time.time() - cache_excel["last_update"] > 3600):
         
         try:
-            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
-            res.raise_for_status()
+            print("🚀 INICIO carga de datos")
+            # 🔽 AQUÍ: antes de descargar
+            print("📥 Descargando CSV...")
+
+
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=5)
+            res.raise_for_status()      
+
+            print("✅ CSV descargado")
+            # 🔽 AQUÍ: después de leer CSV
+            print("📊 Leyendo CSV en DataFrame...")
 
             df = pd.read_csv(
              io.BytesIO(res.content),
@@ -83,6 +92,28 @@ def cargar_datos():
              sep=None,
              engine="python"
              ).fillna("")
+            
+            print("✅ CSV convertido a DataFrame")
+            print("📊 Filas:", len(df))
+            print("📊 Columnas INICIALES:", len(df.columns))
+            
+            # 🔥 REDUCIR COLUMNAS (CLAVE PARA RENDIMIENTO)
+            columnas_necesarias = [
+              "CODIGO_EXTRAIDO",
+              "DESCRIPCION_EXTRAIDA",
+              "DESCRIPCIÓN DEL TRABAJO",
+              "FECHA PROGRAMADA",
+              "Descripción del Trabajo Realizado Indique lo realizado Valores y/o resultados de pruebas realizadas si es necesario puede hacer algún esquema en el reverso use hojas en blanco para notificar si es necesario engrampandola adecuadamente.",
+              "Observaciones y/o Recomendaciones Pendientes de Realizar Generar el AVISO correspondiente."]
+
+            columnas_tareas = [c for c in df.columns if "TAREA" in c.upper()]
+            columnas_resp = [c for c in df.columns if "RESPONSABLE" in c.upper()]
+
+            columnas_finales = columnas_necesarias + columnas_tareas + columnas_resp
+
+            df = df[[c for c in columnas_finales if c in df.columns]]
+
+            print("📊 Columnas DESPUÉS DE FILTRAR:", len(df.columns))
 
             # Formatear fecha
             col_fecha = "FECHA (DÍA 01)"
@@ -91,9 +122,14 @@ def cargar_datos():
 
             df = df.astype(str).replace(r'\.0$', '', regex=True)
 
+            # 🔽 AQUÍ: TEXTO_RAG
+            print("🧠 Construyendo TEXTO_RAG...")
+
             # 🔥 NUEVO: construir texto RAG
             df = construir_texto_rag(df)
 
+            print("✅ TEXTO_RAG listo")
+            print("⚙️ Normalizando columnas...")
             # 🔥 NORMALIZACIONES (UNA SOLA VEZ)
             df["TEXTO_RAG_NORM"] = df["TEXTO_RAG"].apply(normalizar)
             df["CODIGO_NORM"] = df["CODIGO_EXTRAIDO"].astype(str).apply(normalizar)
@@ -101,11 +137,17 @@ def cargar_datos():
 
             cache_excel["df"] = df
             cache_excel["last_update"] = time.time()
-            # 🔥 GENERAR INSIGHTS AUTOMÁTICOS
-            guardar_insights(df)
 
+            print("💾 DataFrame guardado en cache")
+
+            # ❌ IMPORTANTE: DEJAR COMENTADO
+            # guardar_insights(df)
+
+            print("🏁 FIN carga de datos")
+            
         except Exception as e:
             print(f"Error al descargar datos del Sheet: {e}")
+            print("📥 CSV descargado")
             return None        
     return cache_excel["df"]
 
