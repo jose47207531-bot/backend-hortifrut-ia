@@ -11,7 +11,7 @@ import re
 import pdfplumber
 from docx import Document
 from core.analytics import ejecutar_analisis, generar_analisis_tecnico_avanzado
-from core.rag import buscar_en_sheet, obtener_dataframe
+from core.rag import buscar_en_sheet, obtener_dataframe, formatear_contexto
 from core.rag import normalizar
 from core.insights import obtener_insights
 
@@ -408,7 +408,8 @@ async def chat(
         else:
        
          if usar_excel:
-          contexto_sheet = buscar_en_sheet(texto or "")
+          resultado = buscar_en_sheet(texto or "")
+          contexto_sheet = formatear_contexto(resultado)
          else:
           contexto_sheet = ""
 

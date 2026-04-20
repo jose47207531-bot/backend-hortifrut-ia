@@ -3,7 +3,7 @@ import requests
 import io
 import time
 import re
-import unicodedata
+
 
 from core.insights import guardar_insights
 
@@ -12,6 +12,7 @@ from core.insights import guardar_insights
 # ==========================================
 
 def normalizar(texto):
+    import unicodedata, re
     if not texto:
         return ""
     texto = str(texto).lower()
@@ -21,6 +22,35 @@ def normalizar(texto):
     )
     texto = re.sub(r'[^a-z0-9\s]', '', texto)
     return texto.strip()
+
+def construir_texto_rag(df):
+
+    columnas_base = [
+        "DESCRIPCIÓN DEL TRABAJO",
+        "FECHA PROGRAMADA",
+        "Descripción del Trabajo Realizado Indique lo realizado Valores y/o resultados de pruebas realizadas si es necesario puede hacer algún esquema en el reverso use hojas en blanco para notificar si es necesario engrampandola adecuadamente.",
+        "Observaciones y/o Recomendaciones Pendientes de Realizar Generar el AVISO correspondiente."
+    ]
+
+    columnas_tareas = [col for col in df.columns if "TAREA" in col.upper()]
+    columnas_resp = [col for col in df.columns if "RESPONSABLE" in col.upper()]
+
+    columnas_usar = columnas_base + columnas_tareas + columnas_resp
+
+    columnas_usar = [c for c in columnas_usar if c in df.columns]
+
+    df = df.copy()
+
+    df["TEXTO_RAG"] = (
+        df[columnas_usar]
+        .fillna("")
+        .astype(str)
+        .agg(" | ".join, axis=1)
+    )
+
+    return df
+
+
 
 # ==========================================
 # CACHE
@@ -61,6 +91,14 @@ def cargar_datos():
 
             df = df.astype(str).replace(r'\.0$', '', regex=True)
 
+            # 🔥 NUEVO: construir texto RAG
+            df = construir_texto_rag(df)
+
+            # 🔥 NORMALIZACIONES (UNA SOLA VEZ)
+            df["TEXTO_RAG_NORM"] = df["TEXTO_RAG"].apply(normalizar)
+            df["CODIGO_NORM"] = df["CODIGO_EXTRAIDO"].astype(str).apply(normalizar)
+            df["DESC_NORM"] = df["DESCRIPCION_EXTRAIDA"].astype(str).apply(normalizar)
+
             cache_excel["df"] = df
             cache_excel["last_update"] = time.time()
             # 🔥 GENERAR INSIGHTS AUTOMÁTICOS
@@ -76,124 +114,43 @@ def cargar_datos():
 # ==========================================
 
 def buscar_en_sheet(query):
+
     df = cargar_datos()
 
-    print("COLUMNAS DEL DF:", df.columns.tolist())
-
     if df is None or not query:
-        return ""
+        return None
 
-    query = str(query)
+    q = normalizar(query)
 
-    # ==========================================
-    # 🔥 DETECCIÓN DE CÓDIGO DE EQUIPO
-    # ==========================================
+    # 🔥 1. Búsqueda por código (rápida)
+    mask_codigo = df["CODIGO_NORM"].str.contains(q, na=False)
 
-    match_codigo = re.search(r'\b[a-zA-Z]{2,}-\d{2,}-[a-zA-Z0-9]+(?:\s\d{1,2})?\b',
-    query)
+    if mask_codigo.any():
+        return df[mask_codigo].head(5)
 
-    if match_codigo:
-       codigo = match_codigo.group().strip()
-       print("CODIGO DETECTADO:", codigo)
+    # 🔥 2. Búsqueda por descripción de equipo
+    mask_desc = df["DESC_NORM"].str.contains(q, na=False)
 
-       if "CODIGO_EXTRAIDO" in df.columns:
-            
-            # 🔥 PRINT AQUÍ 👇 (ANTES DEL MATCH)
-            print("COMPARANDO:")
-            for val in df["CODIGO_EXTRAIDO"].head(10):
-             print(f"EXCEL: '{val}' | BUSCADO: '{codigo}'")
+    if mask_desc.any():
+        return df[mask_desc].head(5)
 
-            # 🔥 limpiar espacios invisibles del excel
-            df["CODIGO_EXTRAIDO"] = df["CODIGO_EXTRAIDO"].astype(str).str.strip()
-
-            
-            # 🔍 print de ejemplos reales del excel
-            print("EJEMPLOS EN EXCEL:", df["CODIGO_EXTRAIDO"].head(10).tolist())
-
-            mask = df["CODIGO_EXTRAIDO"].str.contains(
-            codigo, case=False, na=False
-        )
-
-            resultado = df[mask]
-
-            print("FILAS ENCONTRADAS:", len(resultado))
-   
-            if not resultado.empty:
-              return resultado.head(20).to_markdown(index=False)
-     
-
-    # 🔢 Búsqueda numérica (órdenes)
-    query_num = re.sub(r'[^0-9]', '', query)
-
-    if len(query_num) >= 4:
-        mask = df.astype(str).apply(
-            lambda col: col.str.contains(query_num, na=False)
-        )
-        resultado = df[mask.any(axis=1)]
-
-        if not resultado.empty:
-            return resultado.head(20).to_markdown(index=False)
-        
-    # ==========================================
-    # 🔍 BÚSQUEDA POR DESCRIPCIÓN
-    # ==========================================
-
-    if "DESCRIPCION_EXTRAIDA" in df.columns:
-
-         query_norm = normalizar(query)
-
-         df_temp = df.copy()
-
-         df_temp["DESCRIPCION_EXTRAIDA"] = df_temp["DESCRIPCION_EXTRAIDA"].astype(str).apply(normalizar)
-
-         mask = df_temp["DESCRIPCION_EXTRAIDA"].str.contains(query_norm, na=False)
-
-         resultado = df[mask]
-
-         if not resultado.empty:
-           return resultado.head(20).to_markdown(index=False)
-
-    # ==========================================
-    # 🔥 BÚSQUEDA INTELIGENTE POR PALABRAS
-    # ==========================================
-
-    query_norm = normalizar(query)
-
-    palabras = [
-       p for p in query_norm.split()
-       if len(p) > 2]
+    # 🔥 3. Búsqueda en texto consolidado
+    palabras = [p for p in q.split() if len(p) > 3]
 
     if not palabras:
-        return ""
+        return None
 
-    df_temp = df.copy()
+    mask_total = False
 
-    for col in df_temp.columns:
-       df_temp[col] = df_temp[col].astype(str).apply(normalizar)
+    for p in palabras:
+        mask_total = mask_total | df["TEXTO_RAG_NORM"].str.contains(p, na=False)
 
-    mask_total = None
-
-    for palabra in palabras:
-
-        # 🔥 evitar que números cortos rompan la búsqueda
-        if palabra.isdigit() and len(palabra) <= 2:
-           continue
-
-        mask = df_temp.apply(
-            lambda col: col.str.contains(palabra, na=False)
-           )
-
-        if mask_total is None:
-           mask_total = mask
-        else:
-           mask_total = mask_total | mask
-
-    resultado = df[mask_total.any(axis=1)]
+    resultado = df[mask_total]
 
     if resultado.empty:
-       return ""
+        return None
 
-    return resultado.head(20).to_markdown(index=False)
+    return resultado.head(5)
 
 # ==========================================
 # ACCESO GLOBAL
@@ -201,3 +158,18 @@ def buscar_en_sheet(query):
 
 def obtener_dataframe():
     return cargar_datos()
+
+def formatear_contexto(df_resultado):
+
+    if df_resultado is None or df_resultado.empty:
+        return ""
+
+    cols = [
+        "CODIGO_EXTRAIDO",
+        "DESCRIPCION_EXTRAIDA",
+        "TEXTO_RAG"
+    ]
+
+    df_small = df_resultado[cols].copy()
+
+    return df_small.to_dict(orient="records")
