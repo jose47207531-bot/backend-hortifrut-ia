@@ -292,15 +292,13 @@ def generar_insights(df):
             df.groupby(col_principal)
             .size()
             .sort_values(ascending=False)
+            .head(20)
         )
 
         insights["fallas_por_equipo"] = equipo_stats.to_dict()
 
     df = construir_texto_completo(df)
-
-    df, clusters = generar_clusters(df.copy(), n_clusters=8)
-    insights["clusters"] = clusters
-
+   
     if "CLUSTER" in df.columns:
 
         cluster_stats = (

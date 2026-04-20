@@ -55,8 +55,8 @@ def detectar_equipo_desde_texto(df, texto):
     # 🔹 2. Búsqueda por descripción
     if "DESCRIPCION_EXTRAIDA" in df.columns:
 
-        df_temp = df.copy()
-        df_temp["desc_norm"] = df_temp["DESCRIPCION_EXTRAIDA"].apply(normalizar)
+        if "DESC_NORM" in df.columns:
+           match = df[df["DESC_NORM"].str.contains(texto, na=False)]
 
         match = df_temp[
             df_temp["desc_norm"].str.contains(texto, na=False)
@@ -116,12 +116,12 @@ def generar_analisis_tecnico_avanzado(df, consulta):
         return "No hay datos históricos cargados."
 
     consulta = normalizar(consulta)
+    
+    if "TEXTO_RAG_NORM" not in df.columns:
+        return "No hay columna optimizada para análisis."
 
-    filtro = df.astype(str).apply(
-        lambda col: col.str.contains(consulta, case=False, na=False)
-    )
-
-    df_filtrado = df[filtro.any(axis=1)]
+    df_filtrado = df[
+        df["TEXTO_RAG_NORM"].str.contains(consulta, na=False)]
 
     if df_filtrado.empty:
         return "No se encontraron eventos históricos similares."
@@ -172,14 +172,13 @@ def ejecutar_analisis(df, texto):
     # ==============================
     elif tipo == "falla":
 
-        col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df.columns else "DESCRIPCIÓN DEL TRABAJO"
+        col_texto = "TEXTO_RAG" if "TEXTO_RAG" in df.columns else None
 
-        if col_texto in df.columns:
+        if col_texto:
+           top = df[col_texto].value_counts().head(10)
 
-            top = df[col_texto].value_counts()
-
-            resultado["tipo"] = "ranking_fallas"
-            resultado["data"] = top.to_dict()
+           resultado["tipo"] = "ranking_fallas"
+           resultado["data"] = top.to_dict()
 
     # ==============================
     # ANALISIS GENERAL POR EQUIPO
@@ -191,7 +190,7 @@ def ejecutar_analisis(df, texto):
             equipo_detectado = detectar_equipo_desde_texto(df, texto)
 
             if equipo_detectado:
-                df_filtrado = df[df[col_principal] == equipo_detectado].copy()
+                df_filtrado = df[df[col_principal] == equipo_detectado]
             else:
                 df_filtrado = df.copy()
 
@@ -200,9 +199,10 @@ def ejecutar_analisis(df, texto):
                     df_filtrado["FECHA (DÍA 01)"], errors='coerce'
                 )
 
-            col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_filtrado.columns else "DESCRIPCIÓN DEL TRABAJO"
+            col_texto = "TEXTO_RAG" if "TEXTO_RAG" in df_filtrado.columns else None
 
-            conteo = df_filtrado[col_texto].value_counts()
+            if col_texto:
+               conteo = df_filtrado[col_texto].value_counts().head(10)
 
             resultado["tipo"] = "incidencias_equipo"
             resultado["equipo"] = equipo_detectado

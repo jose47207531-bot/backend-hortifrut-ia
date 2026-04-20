@@ -71,7 +71,7 @@ def cargar_datos():
 
     global cache_excel
 
-    if cache_excel["df"] is None:
+    if cache_excel["df"] is None or (time.time() - cache_excel["last_update"] > 3600):
         
         try:
             res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
