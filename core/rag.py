@@ -204,14 +204,18 @@ def obtener_dataframe():
 def formatear_contexto(df_resultado):
 
     if df_resultado is None or df_resultado.empty:
-        return ""
+        return "No se encontró información para ese equipo."
 
-    cols = [
-        "CODIGO_EXTRAIDO",
-        "DESCRIPCION_EXTRAIDA",
-        "TEXTO_RAG"
-    ]
+    respuesta = []
 
-    df_small = df_resultado[cols].copy()
+    for i, row in df_resultado.iterrows():
+        bloque = f"""
+🔧 Equipo: {row.get("CODIGO_EXTRAIDO", "")}
+📌 Descripción: {row.get("DESCRIPCION_EXTRAIDA", "")}
 
-    return df_small.to_dict(orient="records")
+🛠️ Trabajo realizado:
+{row.get("TEXTO_RAG", "")}
+"""
+        respuesta.append(bloque)
+
+    return "\n\n".join(respuesta)

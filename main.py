@@ -20,6 +20,11 @@ print("🚀 Cargando datos al iniciar servidor...")
 cargar_datos()
 print("✅ Datos cargados")
 
+memoria_usuario = {
+    "ultimo_equipo": None,
+    "ultimo_resultado": None
+}
+
 
 def es_consulta_tecnica(texto):
     if not texto:
@@ -330,6 +335,10 @@ async def chat(
              ]  
 
            if not df_equipo.empty:
+              
+              # 🔥 GUARDAR CONTEXTO DEL EQUIPO
+              memoria_usuario["ultimo_equipo"] = equipo_detectado
+              memoria_usuario["ultimo_resultado"] = df_equipo
 
               total = len(df_equipo)
               col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_equipo.columns else "DESCRIPCIÓN DEL TRABAJO"
@@ -350,38 +359,26 @@ async def chat(
         # ==========================================
         # 🔥 MODO ANALÍTICO
         # ==========================================
-        analisis = None
+        if es_analitica and memoria_usuario["ultimo_resultado"] is not None:
 
-        if es_analitica and df is not None:
-             analisis = ejecutar_analisis(df, texto)
-             analisis_tecnico = generar_analisis_tecnico_avanzado(df, texto)
+           df_eq = memoria_usuario["ultimo_resultado"]
 
-        if analisis is not None:
+           resumen = df_eq["TEXTO_RAG"].str.cat(sep=" ")
 
-           tipo_analisis = analisis.get("tipo")
-
-           resumen = f"Resultado analítico detectado: {analisis}"
-         
            prompt = f"""
            Eres un ingeniero senior de mantenimiento experto en una planta industrial.
-           Tu objetivo es ayudar en la toma de decisiones operativas y estratégicas.
-
-           Tipo de análisis detectado: {tipo_analisis}
-
+           Tu objetivo es ayudar en la toma de decisiones operativas y estratégicas.          
            Tu objetivo NO es solo responder, sino ayudar a tomar decisiones operativas.
 
            Tienes dos fuentes de información:
 
-           1) Datos analíticos:
-           {resumen}
+    Analiza SOLO este equipo:
+    {memoria_usuario["ultimo_equipo"]}
 
-           2) Historial real:
-           {analisis_tecnico}
+    Historial:
+    {resumen}
 
-           3) Insights globales del sistema:
-           {insights}
-
-           Debes generar una respuesta estructurada con:
+   Debes generar una respuesta estructurada con:
 
            🔍 Hallazgos:
          - Qué está ocurriendo
@@ -405,11 +402,11 @@ async def chat(
 
            response = model.generate_content(prompt)
            usage = response.usage_metadata
-
+ 
            return {
-           "respuesta": response.text,
-           "tokens_usados": usage.total_token_count}
-
+        "respuesta": response.text,
+        "tokens_usados": usage.total_token_count}
+        
         else:
        
          if usar_excel:
