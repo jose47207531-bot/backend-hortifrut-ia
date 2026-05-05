@@ -168,39 +168,13 @@ def buscar_en_sheet(query):
     mask_codigo = df["CODIGO_NORM"].str.contains(q, na=False)
 
     if mask_codigo.any():
-
-       resultado = df[mask_codigo].copy()
-
-       # 🔥 convertir fecha
-       if "FECHA PROGRAMADA" in resultado.columns:
-           resultado["FECHA PROGRAMADA"] = pd.to_datetime(
-              resultado["FECHA PROGRAMADA"], errors="coerce", dayfirst=True
-           )
-
-             # 🔥 ordenar por más reciente
-           resultado = resultado.sort_values(
-            "FECHA PROGRAMADA", ascending=False
-        )
-
-       return resultado.head(3)
+        return df[mask_codigo].head(5)
 
     # 🔥 2. Búsqueda por descripción de equipo
     mask_desc = df["DESC_NORM"].str.contains(q, na=False)
 
     if mask_desc.any():
-
-       resultado = df[mask_desc].copy()
-
-       if "FECHA PROGRAMADA" in resultado.columns:
-          resultado["FECHA PROGRAMADA"] = pd.to_datetime(
-            resultado["FECHA PROGRAMADA"], errors="coerce", dayfirst=True
-        )
-
-          resultado = resultado.sort_values(
-            "FECHA PROGRAMADA", ascending=False
-        )
-
-       return resultado.head(3)
+        return df[mask_desc].head(5)
 
     # 🔥 3. Búsqueda en texto consolidado
     palabras = [p for p in q.split() if len(p) > 3]
@@ -213,21 +187,12 @@ def buscar_en_sheet(query):
     for p in palabras:
         mask_total = mask_total | df["TEXTO_RAG_NORM"].str.contains(p, na=False)
 
-    resultado = df[mask_total].copy()
+    resultado = df[mask_total]
 
     if resultado.empty:
         return None
 
-    if "FECHA PROGRAMADA" in resultado.columns:
-        resultado["FECHA PROGRAMADA"] = pd.to_datetime(
-        resultado["FECHA PROGRAMADA"], errors="coerce", dayfirst=True
-    )
-
-    resultado = resultado.sort_values(
-        "FECHA PROGRAMADA", ascending=False
-    )
-
-    return resultado.head(3)
+    return resultado.head(5)
 
 # ==========================================
 # ACCESO GLOBAL
@@ -239,18 +204,18 @@ def obtener_dataframe():
 def formatear_contexto(df_resultado):
 
     if df_resultado is None or df_resultado.empty:
-        return ""
+        return "No se encontró información para ese equipo."
 
-    bloques = []
+    respuesta = []
 
-    for _, row in df_resultado.head(3).iterrows():  # 🔥 limitar a 3
-
+    for i, row in df_resultado.iterrows():
         bloque = f"""
-Equipo: {row.get("CODIGO_EXTRAIDO", "")}
-Descripción: {row.get("DESCRIPCION_EXTRAIDA", "")}
-Fecha: {row.get("FECHA PROGRAMADA", "")}
-Trabajo: {row.get("DESCRIPCIÓN DEL TRABAJO", "")}
-"""
-        bloques.append(bloque.strip())
+🔧 Equipo: {row.get("CODIGO_EXTRAIDO", "")}
+📌 Descripción: {row.get("DESCRIPCION_EXTRAIDA", "")}
 
-    return "\n\n".join(bloques)
+🛠️ Trabajo realizado:
+{row.get("TEXTO_RAG", "")}
+"""
+        respuesta.append(bloque)
+
+    return "\n\n".join(respuesta)

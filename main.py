@@ -123,54 +123,29 @@ def analizar_entidad(df, texto_usuario):
 
 def detectar_equipo_en_texto(df, texto):
 
-    if df is None or df.empty or not texto:
+    if df is None or df.empty:
+      return None
+
+    if df is None or not texto:
         return None
 
-    texto_lower = texto.lower()
-    texto_norm = normalizar(texto)
+    texto = texto.lower()
 
-    # ==========================================
-    # 🔥 1. MÉTODO ORIGINAL (rápido y confiable)
-    # ==========================================
     for _, row in df.iterrows():
 
         codigo = str(row.get("CODIGO_EXTRAIDO", "")).lower()
         desc = str(row.get("DESCRIPCION_EXTRAIDA", "")).lower()
 
-        if codigo and codigo in texto_lower:
+        # 🔥 prioridad: codigo
+        if codigo and codigo in texto:
             return row.get("CODIGO_EXTRAIDO")
 
-        if desc and desc in texto_lower:
+        # 🔥 fallback: descripcion → retorna codigo
+        if desc and desc in texto:
             return row.get("CODIGO_EXTRAIDO")
-
-    # ==========================================
-    # 🔥 2. MÉTODO NORMALIZADO (más flexible)
-    # ==========================================
-    if "CODIGO_NORM" in df.columns:
-        match = df[df["CODIGO_NORM"].str.contains(texto_norm, na=False)]
-        if not match.empty:
-            return match["CODIGO_EXTRAIDO"].iloc[0]
-
-    if "DESC_NORM" in df.columns:
-        match = df[df["DESC_NORM"].str.contains(texto_norm, na=False)]
-        if not match.empty:
-            return match["CODIGO_EXTRAIDO"].iloc[0]
-
-    # ==========================================
-    # 🔥 3. BÚSQUEDA POR PALABRAS
-    # ==========================================
-    palabras = [p for p in texto_norm.split() if len(p) > 3]
-
-    if palabras and "DESC_NORM" in df.columns:
-        mask = False
-        for p in palabras:
-            mask = mask | df["DESC_NORM"].str.contains(p, na=False)
-
-        match = df[mask]
-        if not match.empty:
-            return match["CODIGO_EXTRAIDO"].iloc[0]
 
     return None
+
 # ==========================================
 # CONFIGURACIÓN GEMINI
 # ==========================================
@@ -264,23 +239,7 @@ async def chat(
         equipo_detectado = detectar_equipo_en_texto(df, texto)  
         # -------- CLASIFICADOR ANTES DEL RAG --------
         usar_excel = es_consulta_tecnica(texto)
-        es_analitica = es_pregunta_analitica(texto)     
-
-        texto_norm = normalizar(texto)
-
-        # 🔥 detectar preguntas tipo resumen (las únicas donde aplica ese bloque)
-        es_resumen_equipo = any(p in texto_norm for p in [
-        "resumen",
-        "general",
-        "info del equipo",
-        "informacion del equipo",
-        "historial completo",
-        "todo lo del equipo"
-          ])
-
-
-
-
+        es_analitica = es_pregunta_analitica(texto)        
         insights = obtener_insights()
         col_equipo = obtener_columna_principal(df)
 
@@ -367,7 +326,7 @@ async def chat(
         # ==========================================
         # 📊 RESPUESTA DIRECTA POR EQUIPO (SIN IA)
         # ==========================================
-        if equipo_detectado and df is not None and es_resumen_equipo:
+        if equipo_detectado and df is not None:
 
            df_equipo = df[
               (df[col_equipo].astype(str) == str(equipo_detectado)) |
