@@ -97,30 +97,32 @@ def cargar_datos():
             print("📊 Filas:", len(df))
             print("📊 Columnas INICIALES:", len(df.columns))
             
-            # 🔥 REDUCIR COLUMNAS (CLAVE PARA RENDIMIENTO)
-            columnas_necesarias = [
-              "CODIGO_EXTRAIDO",
-              "DESCRIPCION_EXTRAIDA",
-              "DESCRIPCIÓN DEL TRABAJO",
-              "FECHA PROGRAMADA",
-              "Descripción del Trabajo Realizado Indique lo realizado Valores y/o resultados de pruebas realizadas si es necesario puede hacer algún esquema en el reverso use hojas en blanco para notificar si es necesario engrampandola adecuadamente.",
-              "Observaciones y/o Recomendaciones Pendientes de Realizar Generar el AVISO correspondiente."]
+            # ==========================================================
+            # 🔥 CAMBIO CLAVE: YA NO SE RECORTAN NI LIMITAN LAS COLUMNAS
+            # ==========================================================
+            # Comentamos el recorte rígido anterior para asegurar que columnas 
+            # de ubicación lejana (como la 163) sigan existiendo en el DataFrame.
+            #
+            # columnas_necesarias = [...]
+            # columnas_tareas = [...]
+            # columnas_resp = [...]
+            # columnas_finales = columnas_necesarias + columnas_tareas + columnas_resp
+            # df = df[[c for c in columnas_finales if c in df.columns]]
+            
+            # Limpiamos los nombres de las columnas para evitar espacios en blanco invisibles
+            df.columns = [str(c).strip() for c in df.columns]
 
-            columnas_tareas = [c for c in df.columns if "TAREA" in c.upper()]
-            columnas_resp = [c for c in df.columns if "RESPONSABLE" in c.upper()]
-
-            columnas_finales = columnas_necesarias + columnas_tareas + columnas_resp
-
-            df = df[[c for c in columnas_finales if c in df.columns]]
-
-            print("📊 Columnas DESPUÉS DE FILTRAR:", len(df.columns))
+            print("📊 Columnas CONSERVADAS (Total real):", len(df.columns))
 
             # Formatear fecha
             col_fecha = "FECHA (DÍA 01)"
             if col_fecha in df.columns:
               df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce', dayfirst=True)
 
-            df = df.astype(str).replace(r'\.0$', '', regex=True)
+            for col in df.columns:
+                if df[col].dtype == 'object' or df[col].dtype == 'float64':
+                    # Reemplaza temporalmente el patrón ".0" al final del texto sin corromper nulos reales
+                    df[col] = df[col].apply(lambda x: re.sub(r'\.0$', '', str(x)) if pd.notna(x) else x)
 
             # 🔽 AQUÍ: TEXTO_RAG
             print("🧠 Construyendo TEXTO_RAG...")
@@ -130,10 +132,21 @@ def cargar_datos():
 
             print("✅ TEXTO_RAG listo")
             print("⚙️ Normalizando columnas...")
-            # 🔥 NORMALIZACIONES (UNA SOLA VEZ)
-            df["TEXTO_RAG_NORM"] = df["TEXTO_RAG"].apply(normalizar)
-            df["CODIGO_NORM"] = df["CODIGO_EXTRAIDO"].astype(str).apply(normalizar)
-            df["DESC_NORM"] = df["DESCRIPCION_EXTRAIDA"].astype(str).apply(normalizar)
+
+
+           # 🔥 NORMALIZACIONES QUE CONSERVAN ESTRUCTURAS DE CÓDIGOS (Guiones y barras)
+            # Aseguramos de enviar un String limpio a la función de normalización
+            df["TEXTO_RAG_NORM"] = df["TEXTO_RAG"].fillna("").apply(normalizar)
+            
+            if "CODIGO_EXTRAIDO" in df.columns:
+                df["CODIGO_NORM"] = df["CODIGO_EXTRAIDO"].fillna("").astype(str).apply(normalizar)
+            else:
+                df["CODIGO_NORM"] = ""
+                
+            if "DESCRIPCION_EXTRAIDA" in df.columns:
+                df["DESC_NORM"] = df["DESCRIPCION_EXTRAIDA"].fillna("").astype(str).apply(normalizar)
+            else:
+                df["DESC_NORM"] = ""
 
             cache_excel["df"] = df
             cache_excel["last_update"] = time.time()

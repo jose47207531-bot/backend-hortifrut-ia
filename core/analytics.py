@@ -38,11 +38,27 @@ def normalizar(texto):
 def detectar_equipo_desde_texto(df, texto):
 
     texto = normalizar(texto)
-
+    texto_limpio = normalizar(texto).strip()
     col_principal = obtener_columna_principal(df)
 
-    if col_principal is None:
+    if col_principal is None or not texto_limpio:
         return None
+    
+    # ==========================================
+    # 🔎 1. BÚSQUEDA POR NÚMERO DE ORDEN (OT)
+    # ==========================================
+    # Buscamos columnas que representen órdenes de trabajo
+    columnas_ot = [c for c in df.columns if any(p in str(c).upper() for p in ["ORDEN", "NRO_ORDEN", "OT", "NUM_OT"])]
+    for col in columnas_ot:
+        # Extraemos números del texto de consulta para buscar coincidencias exactas de OT
+        numeros = re.findall(r'\b\d+\b', texto_limpio)
+        for num in numeros:
+            match_ot = df[df[col].astype(str).str.contains(num, na=False)]
+            if not match_ot.empty:
+                # Si encontramos la OT, retornamos el equipo asociado a esa OT
+                return match_ot[col_principal].iloc[0]
+
+
 
     # 🔹 1. Búsqueda directa por código
     coincidencias = df[
