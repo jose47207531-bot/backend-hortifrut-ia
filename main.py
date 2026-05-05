@@ -239,7 +239,23 @@ async def chat(
         equipo_detectado = detectar_equipo_en_texto(df, texto)  
         # -------- CLASIFICADOR ANTES DEL RAG --------
         usar_excel = es_consulta_tecnica(texto)
-        es_analitica = es_pregunta_analitica(texto)        
+        es_analitica = es_pregunta_analitica(texto)     
+
+        texto_norm = normalizar(texto)
+
+        # 🔥 detectar preguntas tipo resumen (las únicas donde aplica ese bloque)
+        es_resumen_equipo = any(p in texto_norm for p in [
+        "resumen",
+        "general",
+        "info del equipo",
+        "informacion del equipo",
+        "historial completo",
+        "todo lo del equipo"
+          ])
+
+
+
+
         insights = obtener_insights()
         col_equipo = obtener_columna_principal(df)
 
@@ -326,7 +342,7 @@ async def chat(
         # ==========================================
         # 📊 RESPUESTA DIRECTA POR EQUIPO (SIN IA)
         # ==========================================
-        if equipo_detectado and df is not None:
+        if equipo_detectado and df is not None and es_resumen_equipo:
 
            df_equipo = df[
               (df[col_equipo].astype(str) == str(equipo_detectado)) |
