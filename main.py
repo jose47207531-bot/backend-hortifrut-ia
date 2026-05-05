@@ -227,7 +227,7 @@ def obtener_o_crear_chat(session_id):
 
 
 # ==========================================
-# ENDPOINT PRINCIPAL (CONVERSACIONAL REESTRUCTURADO)
+# ENDPOINT PRINCIPAL (DINÁMICO Y OPTIMIZADO EN TOKENS)
 # ==========================================
 
 @app.post("/chat")
@@ -277,23 +277,22 @@ async def chat(
             }
         
         # ==========================================
-        # 🔮 EXTRAER PREDICCIÓN DE RIESGO (CONVERSACIONAL)
+        # 🔮 EXTRAER PREDICCIÓN DE RIESGO
         # ==========================================
         if any(p in texto.lower() for p in ["riesgo", "fallar", "falla", "probabilidad"]):
             if equipo_detectado and "riesgo_equipos" in insights:
                 data = insights["riesgo_equipos"].get(equipo_detectado)
                 if data:
-                    # Guardamos la analítica en una variable interna para dársela a Gemini
                     contexto_soporte_interno += (
-                        f"\n[DATOS DE RIESGO - BASE DE DATOS]:\n"
-                        f"- Equipo detectado: {equipo_detectado}\n"
-                        f"- Nivel de riesgo calculado: {data['riesgo']}\n"
-                        f"- Score de criticidad: {data['score']}\n"
-                        f"- Motivos del riesgo: {', '.join(data['motivo'])}\n"
+                        f"\n[DATOS DE RIESGO DE LA BD]:\n"
+                        f"- Equipo: {equipo_detectado}\n"
+                        f"- Nivel de riesgo: {data['riesgo']}\n"
+                        f"- Score: {data['score']}\n"
+                        f"- Motivos: {', '.join(data['motivo'])}\n"
                     )
 
         # ==========================================
-        # 🚨 EXTRAER DETECCIÓN DE ANOMALÍAS (CONVERSACIONAL)
+        # 🚨 EXTRAER DETECCIÓN DE ANOMALÍAS
         # ==========================================
         if any(p in texto.lower() for p in ["anomalia", "anomalía", "raro", "fuera de lo normal"]):
             anomalias = insights.get("anomalias", {})
@@ -303,9 +302,9 @@ async def chat(
                     contexto_soporte_interno += (
                         f"\n[ANOMALÍA DETECTADA EN HISTORIAL]:\n"
                         f"- Equipo: {equipo_detectado}\n"
-                        f"- Tipo de anomalía: {data['tipo']} (Nivel: {data['nivel']})\n"
-                        f"- Métrica actual: {data['valor_actual']} (Promedio: {data['promedio']})\n"
-                        f"- Desviación: {data['desviacion']} | Z-score: {data['z_score']}\n"
+                        f"- Tipo: {data['tipo']} (Nivel: {data['nivel']})\n"
+                        f"- Valor actual: {data['valor_actual']} (Promedio: {data['promedio']})\n"
+                        f"- Z-score: {data['z_score']}\n"
                     )
             else:
                 if anomalias:
@@ -317,9 +316,10 @@ async def chat(
                     )
 
         # ==========================================
-        # 📊 EXTRAER HISTORIAL POR EQUIPO (CONVERSACIONAL)
+        # 📊 HISTORIAL DINÁMICO POR EQUIPO (AHORRO MÁXIMO DE TOKENS)
         # ==========================================
         if equipo_detectado and df is not None:
+            # Filtrar filas asociadas al equipo detectado
             df_equipo = df[
                 (df[col_equipo].astype(str) == str(equipo_detectado)) |
                 (df["DESCRIPCION_EXTRAIDA"].astype(str).str.contains(str(equipo_detectado), case=False, na=False)) |
@@ -327,19 +327,38 @@ async def chat(
             ]  
 
             if not df_equipo.empty:
-                # Guardamos la entidad en memoria de usuario de forma local
                 memoria_usuario["ultimo_equipo"] = equipo_detectado
                 memoria_usuario["ultimo_resultado"] = df_equipo
 
-                total = len(df_equipo)
-                col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_equipo.columns else "DESCRIPCIÓN DEL TRABAJO"
-                trabajos = df_equipo[col_texto].value_counts().head(5).to_string()
+                lineas_historial = []
+                
+                # Limitamos a los últimos 15 registros para controlar la ventana de contexto
+                # Analizaremos dinámicamente cada celda de cada fila
+                for _, fila in df_equipo.tail(15).iterrows():
+                    datos_activos = []
+                    
+                    for col in df_equipo.columns:
+                        valor = fila[col]
+                        
+                        # Ignoramos columnas de control internas de tu RAG o vacías para ahorrar tokens
+                        if col in ["TEXTO_RAG", "TEXTO_RAG_NORM", "TEXTO_COMPLETO"]:
+                            continue
+                        
+                        # Filtro inteligente: Verificamos si la celda tiene un valor real (no NaN, no nulo, no vacío)
+                        if pd.notna(valor) and str(valor).strip() != "" and str(valor).lower() != "nan":
+                            # Añade el par "Columna: Valor" (Ej: "Combustible: 45Gln" o "Técnico: Juan")
+                            datos_activos.append(f"{col}: {str(valor).strip()}")
+                    
+                    # Unimos todas las columnas con datos de esta fila usando un separador compacto "|"
+                    if datos_activos:
+                        lineas_historial.append("• " + " | ".join(datos_activos))
+
+                # Unimos todos los registros compactados en un solo bloque de texto
+                historial_sintetizado = "\n".join(lineas_historial)
 
                 contexto_soporte_interno += (
-                    f"\n[HISTORIAL DE INTERVENCIONES]:\n"
-                    f"- Equipo: {equipo_detectado}\n"
-                    f"- Cantidad total de intervenciones: {total}\n"
-                    f"- Resumen de trabajos más frecuentes registrados:\n{trabajos}\n"
+                    f"\n[REGISTROS DE MANTENIMIENTO REALES PARA EL EQUIPO {equipo_detectado}]:\n"
+                    f"{historial_sintetizado}\n"
                 )
 
         # ==========================================
@@ -350,16 +369,15 @@ async def chat(
             resumen_rag = df_eq["TEXTO_RAG"].str.cat(sep=" ")
             
             contexto_soporte_interno += (
-                f"\n[HISTORIAL DE RAG EXTENDIDO PARA ANÁLISIS DE {memoria_usuario['ultimo_equipo']}]:\n"
+                f"\n[HISTORIAL ADICIONAL DE ANÁLISIS DE {memoria_usuario['ultimo_equipo']}]:\n"
                 f"{resumen_rag}\n"
-                f"*Nota de análisis: Evalúa hallazgos, riesgos de tendencia, recomendaciones operativas y criticidad de manera redactada.*"
             )
 
         # ==========================================
         # 🌐 BÚSQUEDA EN SHEETS (RAG TRADICIONAL)
         # ==========================================
         contexto_sheet = ""
-        # Si no se calculó analítica de equipo directa, buscamos coincidencias con RAG normal
+        # Si no se generó un bloque de equipo específico, hacemos una búsqueda RAG genérica
         if usar_excel and not contexto_soporte_interno:
             resultado = buscar_en_sheet(texto or "")
             contexto_sheet = formatear_contexto(resultado)
@@ -374,18 +392,17 @@ async def chat(
         # ==========================================
         chat_sesion = obtener_o_crear_chat(session_id)
 
-        # Construimos el prompt dinámico. El contexto va oculto internamente para que Gemini 
-        # lo procese en segundo plano sin forzar elementos rígidos visuales en la respuesta.
+        # Inyectamos de forma limpia el contexto técnico para que Gemini responda conversacionalmente
         prompt_inyectado = ""
         if contexto_soporte_interno:
-            prompt_inyectado += f"\n[DATOS TÉCNICOS SENSORIZADOS/HISTÓRICOS]:\n{contexto_soporte_interno}\n"
+            prompt_inyectado += f"\n[DATOS TÉCNICOS HISTÓRICOS Y SENSORIZADOS]:\n{contexto_soporte_interno}\n"
         elif contexto_sheet:
             prompt_inyectado += f"\n[REGISTROS EXCEL DE SOPORTE]:\n{contexto_sheet}\n"
 
         prompt_final = (
             f"{prompt_inyectado}"
             f"El usuario te hace la siguiente consulta en el chat. "
-            f"Responde de forma redactada, natural y fluida como un Ingeniero Senior de Mantenimiento:\n"
+            f"Responde de forma redactada, natural, amigable y muy fluida como un Ingeniero Senior de Mantenimiento:\n"
             f"Mensaje del Colaborador: {texto}"
         )
 
@@ -408,11 +425,3 @@ async def chat(
         import traceback
         print(f"Error detallado: {traceback.format_exc()}")
         return {"respuesta": f"Lo siento, ocurrió un error interno al procesar tu solicitud: {str(e)}", "tokens_usados": 0}
-
-# ==========================================
-# ENDPOINT STATUS
-# ==========================================
-
-@app.get("/")
-def home():
-    return {"status": "Servidor IA Activo"}
