@@ -74,7 +74,7 @@ def es_pregunta_analitica(texto):
         "tendencia",
         "patron",
         "patrón",
-      "indicador",
+        "indicador",
         "optimizar",
         "que paso",
         "que pasó",
@@ -117,14 +117,14 @@ def analizar_entidad(df, texto_usuario):
         "total": total_registros,
         "falla_frecuente": falla_frecuente
     }
+
 # ==========================================
 # DETECTOR INTELIGENTE DE EQUIPO
 # ==========================================
 
 def detectar_equipo_en_texto(df, texto):
-
     if df is None or df.empty:
-      return None
+        return None
 
     if df is None or not texto:
         return None
@@ -132,7 +132,6 @@ def detectar_equipo_en_texto(df, texto):
     texto = texto.lower()
 
     for _, row in df.iterrows():
-
         codigo = str(row.get("CODIGO_EXTRAIDO", "")).lower()
         desc = str(row.get("DESCRIPCION_EXTRAIDA", "")).lower()
 
@@ -146,46 +145,61 @@ def detectar_equipo_en_texto(df, texto):
 
     return None
 
+
 # ==========================================
-# CONFIGURACIÓN GEMINI
+# CONFIGURACIÓN GEMINI (MEJORADA PARA CHAT)
 # ==========================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    generation_config={
-        "temperature": 0.0,
-        "top_p": 0.95,
-        "top_k": 40,
-        "response_mime_type": "text/plain",
-    },
-    system_instruction=(
-       "Eres un ingeniero senior de mantenimiento experto en gestión de mantenimiento industrial. "
-    "Responde siempre en español. "
-    "Cuando el usuario consulte sobre órdenes, equipos, técnicos, fechas o trabajos, "
-    "solo puedes usar la información contenida en 'Registros Excel'. "
-    "Si la información no está en los registros, debes responder exactamente: "
-    "'No existe información en el registro para esta consulta.' "
-    "Si el usuario hace preguntas generales, saludos o pide recomendaciones técnicas generales, "
-    "puedes responder normalmente sin depender de los registros."
-    )
+# Ajustamos temperatura a 0.5 para tener respuestas más conversacionales pero precisas técnicamente
+generation_config = {
+    "temperature": 0.5,
+    "top_p": 0.95,
+    "top_k": 40,
+    "response_mime_type": "text/plain",
+}
+
+# Instrucción del sistema optimizada para interactuar como chat dinámico
+system_instruction = (
+    "Eres un ingeniero senior de mantenimiento experto en gestión de mantenimiento industrial. "
+    "Responde siempre en español de manera fluida, natural, amigable y sumamente conversacional (como Gemini). "
+    "Tu objetivo es ayudar tanto en consultas de la base de datos como en pautas, inquietudes o dudas del día a día de los colaboradores. "
+    "\n\nDIRECTRICES:\n"
+    "1. Cuando el usuario consulte sobre registros, órdenes, equipos, técnicos o fallas del historial, "
+    "debes apoyarte de forma estricta en la información provista en los contextos del Excel para dar tu respuesta. "
+    "Explícala de forma redactada e inteligente con tus propias palabras. No inventes datos específicos si no están presentes.\n"
+    "2. Si la información no está en los registros para esa consulta específica, indícalo amablemente diciendo: "
+    "'No existe información específica en el registro para esta consulta, pero te puedo brindar recomendaciones técnicas generales sobre el tema.'\n"
+    "3. Si el usuario te hace preguntas generales, te saluda, te pide teoría de ingeniería o recomendaciones prácticas para sus tareas diarias, "
+    "puedes responder libremente usando todos tus conocimientos técnicos de Ingeniero Senior, sin verte limitado por la base de datos."
 )
 
+model = genai.GenerativeModel(
+    model_name="gemini-2.5-flash",
+    generation_config=generation_config,
+    system_instruction=system_instruction
+)
+
+
 # ==========================================
-# FASTAPI
+# FASTAPI Y MEMORIA DE SESIONES
 # ==========================================
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-memoria_conversacion = defaultdict(list)
-# 🔵 NUEVA MEMORIA PARA CONTEXTO DEL EXCEL
+# Diccionario para almacenar las sesiones de chat activas con historial nativo de Gemini
+if "sesiones_chat" not in globals():
+    sesiones_chat = {}
+
+# Memoria para conservar contextos previos de Excel por sesión de usuario
 memoria_contexto_sheet = {}
 
+
 # ==========================================
-# EXTRACTORES LOCALES
+# EXTRACTORES LOCALES (MANTENIDOS SIN CAMBIOS)
 # ==========================================
 
 def extraer_de_pdf(bytes_file):
@@ -202,7 +216,18 @@ def extraer_de_excel_adjunto(bytes_file):
 
 
 # ==========================================
-# ENDPOINT PRINCIPAL
+# FUNCIÓN AUXILIAR DE CHAT CON MEMORIA
+# ==========================================
+
+def obtener_o_crear_chat(session_id):
+    if session_id not in sesiones_chat:
+        # Crea una sesión de chat nativa que gestiona automáticamente el historial
+        sesiones_chat[session_id] = model.start_chat(history=[])
+    return sesiones_chat[session_id]
+
+
+# ==========================================
+# ENDPOINT PRINCIPAL (CONVERSACIONAL REESTRUCTURADO)
 # ==========================================
 
 @app.post("/chat")
@@ -214,10 +239,10 @@ async def chat(
     df = None
     texto_extraido = ""
     equipo_detectado = None
-    try:            
+    contexto_soporte_interno = ""
 
+    try:            
         # -------- PROCESAMIENTO DE ARCHIVO --------
-        
         if archivo:
             mimetype = archivo.content_type
             bytes_file = await archivo.read()
@@ -228,285 +253,162 @@ async def chat(
                 texto_extraido = extraer_de_docx(bytes_file)
             elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
                 texto_extraido = extraer_de_excel_adjunto(bytes_file)
+                
         # Si se extrajo texto del archivo, lo agregamos a la consulta
         if texto_extraido:
-         texto = (texto or "") + "\n\nContenido del archivo:\n" + texto_extraido
+            texto = (texto or "") + "\n\nContenido del archivo:\n" + texto_extraido
 
         df = obtener_dataframe()
         if df is None or df.empty:
             return {"respuesta": "No se pudo cargar la base de datos.", "tokens_usados": 0}
          
         equipo_detectado = detectar_equipo_en_texto(df, texto)  
-        # -------- CLASIFICADOR ANTES DEL RAG --------
+        
+        # Clasificadores de consultas
         usar_excel = es_consulta_tecnica(texto)
         es_analitica = es_pregunta_analitica(texto)        
         insights = obtener_insights()
         col_equipo = obtener_columna_principal(df)
 
         if col_equipo is None:
-          return {
-        "respuesta": "No se encontró columna principal de equipos en la base de datos.",
-        "tokens_usados": 0
-    }
+            return {
+                "respuesta": "No se encontró columna principal de equipos en la base de datos.",
+                "tokens_usados": 0
+            }
         
         # ==========================================
-        # 🔮 PREDICCIÓN DE RIESGO (SIN IA)
+        # 🔮 EXTRAER PREDICCIÓN DE RIESGO (CONVERSACIONAL)
         # ==========================================
         if any(p in texto.lower() for p in ["riesgo", "fallar", "falla", "probabilidad"]):
-
-           if equipo_detectado and "riesgo_equipos" in insights:
-
-              data = insights["riesgo_equipos"].get(equipo_detectado)
-
-              if data:
-                 return {
-                "respuesta": f"""
-        Equipo: {equipo_detectado}
-
-        Nivel de riesgo: {data['riesgo']}
-        Score: {data['score']}
-
-        Motivos:
-         - {"\n- ".join(data['motivo'])}
-        """,
-                "tokens_usados": 0
-            }
+            if equipo_detectado and "riesgo_equipos" in insights:
+                data = insights["riesgo_equipos"].get(equipo_detectado)
+                if data:
+                    # Guardamos la analítica en una variable interna para dársela a Gemini
+                    contexto_soporte_interno += (
+                        f"\n[DATOS DE RIESGO - BASE DE DATOS]:\n"
+                        f"- Equipo detectado: {equipo_detectado}\n"
+                        f"- Nivel de riesgo calculado: {data['riesgo']}\n"
+                        f"- Score de criticidad: {data['score']}\n"
+                        f"- Motivos del riesgo: {', '.join(data['motivo'])}\n"
+                    )
 
         # ==========================================
-        # 🚨 DETECCIÓN DE ANOMALÍAS (SIN IA)
+        # 🚨 EXTRAER DETECCIÓN DE ANOMALÍAS (CONVERSACIONAL)
         # ==========================================
         if any(p in texto.lower() for p in ["anomalia", "anomalía", "raro", "fuera de lo normal"]):
-
             anomalias = insights.get("anomalias", {})
-
             if equipo_detectado:
                 data = anomalias.get(equipo_detectado)
-
                 if data:
-                    return {
-                       "respuesta": f"""
-       🚨 ANOMALÍA DETECTADA
-
-        Equipo: {equipo_detectado}
-
-        Tipo: {data['tipo']}
-        Nivel: {data['nivel']}
-
-        Valor actual: {data['valor_actual']}
-        Promedio histórico: {data['promedio']}
-        Desviación estándar: {data['desviacion']}
-
-        Z-score: {data['z_score']}
-        """,
-                "tokens_usados": 0
-            }
-
+                    contexto_soporte_interno += (
+                        f"\n[ANOMALÍA DETECTADA EN HISTORIAL]:\n"
+                        f"- Equipo: {equipo_detectado}\n"
+                        f"- Tipo de anomalía: {data['tipo']} (Nivel: {data['nivel']})\n"
+                        f"- Métrica actual: {data['valor_actual']} (Promedio: {data['promedio']})\n"
+                        f"- Desviación: {data['desviacion']} | Z-score: {data['z_score']}\n"
+                    )
             else:
-                # Mostrar todas las anomalías
-                if not anomalias:
-                    return {
-                "respuesta": "No se detectaron anomalías en los equipos.",
-                "tokens_usados": 0}
-
-                resumen = ""
-
-                for eq, data in list(anomalias.items())[:10]:
-                    resumen += f"""
-            - {eq} | Nivel: {data['nivel']} | Z-score: {data['z_score']}
-            """
-
-                return {
-            "respuesta": f"""
-       🚨 Equipos con comportamiento anormal:
-
-        {resumen}
-        """,
-            "tokens_usados": 0}
+                if anomalias:
+                    resumen_anomalias = ""
+                    for eq, data in list(anomalias.items())[:5]:
+                        resumen_anomalias += f"- {eq} | Nivel: {data['nivel']} | Z-score: {data['z_score']}\n"
+                    contexto_soporte_interno += (
+                        f"\n[ANOMALÍAS GENERALES EN LA PLANTA (Top 5)]:\n{resumen_anomalias}"
+                    )
 
         # ==========================================
-        # 📊 RESPUESTA DIRECTA POR EQUIPO (SIN IA)
+        # 📊 EXTRAER HISTORIAL POR EQUIPO (CONVERSACIONAL)
         # ==========================================
         if equipo_detectado and df is not None:
+            df_equipo = df[
+                (df[col_equipo].astype(str) == str(equipo_detectado)) |
+                (df["DESCRIPCION_EXTRAIDA"].astype(str).str.contains(str(equipo_detectado), case=False, na=False)) |
+                (df["DESCRIPCIÓN DEL TRABAJO"].astype(str).str.contains(str(equipo_detectado), case=False, na=False))
+            ]  
 
-           df_equipo = df[
-              (df[col_equipo].astype(str) == str(equipo_detectado)) |
-              (df["DESCRIPCION_EXTRAIDA"].astype(str).str.contains(str(equipo_detectado), case=False, na=False)) |
-              (df["DESCRIPCIÓN DEL TRABAJO"].astype(str).str.contains(str(equipo_detectado), case=False, na=False))
-             ]  
+            if not df_equipo.empty:
+                # Guardamos la entidad en memoria de usuario de forma local
+                memoria_usuario["ultimo_equipo"] = equipo_detectado
+                memoria_usuario["ultimo_resultado"] = df_equipo
 
-           if not df_equipo.empty:
-              
-              # 🔥 GUARDAR CONTEXTO DEL EQUIPO
-              memoria_usuario["ultimo_equipo"] = equipo_detectado
-              memoria_usuario["ultimo_resultado"] = df_equipo
+                total = len(df_equipo)
+                col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_equipo.columns else "DESCRIPCIÓN DEL TRABAJO"
+                trabajos = df_equipo[col_texto].value_counts().head(5).to_string()
 
-              total = len(df_equipo)
-              col_texto = "TEXTO_COMPLETO" if "TEXTO_COMPLETO" in df_equipo.columns else "DESCRIPCIÓN DEL TRABAJO"
-              trabajos = df_equipo[col_texto].value_counts()
-
-              return {
-                   "respuesta": f"""
-        Equipo detectado: {equipo_detectado}
-
-        Total intervenciones: {total}
-
-        Trabajos realizados:
-        {trabajos.to_string()}
-        """,
-                    "tokens_usados": 0
-                }
+                contexto_soporte_interno += (
+                    f"\n[HISTORIAL DE INTERVENCIONES]:\n"
+                    f"- Equipo: {equipo_detectado}\n"
+                    f"- Cantidad total de intervenciones: {total}\n"
+                    f"- Resumen de trabajos más frecuentes registrados:\n{trabajos}\n"
+                )
 
         # ==========================================
-        # 🔥 MODO ANALÍTICO
+        # 🔥 MODO ANALÍTICO AVANZADO INTEGRADO
         # ==========================================
         if es_analitica and memoria_usuario["ultimo_resultado"] is not None:
+            df_eq = memoria_usuario["ultimo_resultado"]
+            resumen_rag = df_eq["TEXTO_RAG"].str.cat(sep=" ")
+            
+            contexto_soporte_interno += (
+                f"\n[HISTORIAL DE RAG EXTENDIDO PARA ANÁLISIS DE {memoria_usuario['ultimo_equipo']}]:\n"
+                f"{resumen_rag}\n"
+                f"*Nota de análisis: Evalúa hallazgos, riesgos de tendencia, recomendaciones operativas y criticidad de manera redactada.*"
+            )
 
-           df_eq = memoria_usuario["ultimo_resultado"]
-
-           resumen = df_eq["TEXTO_RAG"].str.cat(sep=" ")
-
-           prompt = f"""
-           Eres un ingeniero senior de mantenimiento experto en una planta industrial.
-           Tu objetivo es ayudar en la toma de decisiones operativas y estratégicas.          
-           Tu objetivo NO es solo responder, sino ayudar a tomar decisiones operativas.
-
-           Tienes dos fuentes de información:
-
-    Analiza SOLO este equipo:
-    {memoria_usuario["ultimo_equipo"]}
-
-    Historial:
-    {resumen}
-
-   Debes generar una respuesta estructurada con:
-
-           🔍 Hallazgos:
-         - Qué está ocurriendo
-         - Qué patrones, tendencias o comportamientos detectas
-
-         ⚠️ Riesgos:
-         - Qué podría fallar o empeorar si continúa la tendencia
-
-         🛠️ Recomendaciones:
-         - Acciones concretas
-         - Tipo de mantenimiento (preventivo, correctivo, predictivo)
-
-         📈 Nivel de criticidad:
-         - Bajo / Medio / Alto
-
-         📊 Insight técnico:
-         - Interpretación profesional (como ingeniero)
-
-         Usuario: {texto}
-          """
-
-           response = model.generate_content(prompt)
-           usage = response.usage_metadata
- 
-           return {
-        "respuesta": response.text,
-        "tokens_usados": usage.total_token_count}
-        
-        else:
-       
-         if usar_excel:
-          resultado = buscar_en_sheet(texto or "")
-          contexto_sheet = formatear_contexto(resultado)
-         else:
-          contexto_sheet = ""
-
-# 🔵 Si encontró algo nuevo, lo guardamos
-        if contexto_sheet:
-           memoria_contexto_sheet[session_id] = contexto_sheet
-        
-    # 🔵 Si no encontró nada pero hay contexto previo, lo reutilizamos
-        elif session_id in memoria_contexto_sheet:
+        # ==========================================
+        # 🌐 BÚSQUEDA EN SHEETS (RAG TRADICIONAL)
+        # ==========================================
+        contexto_sheet = ""
+        # Si no se calculó analítica de equipo directa, buscamos coincidencias con RAG normal
+        if usar_excel and not contexto_soporte_interno:
+            resultado = buscar_en_sheet(texto or "")
+            contexto_sheet = formatear_contexto(resultado)
+            
+            if contexto_sheet:
+                memoria_contexto_sheet[session_id] = contexto_sheet
+        elif session_id in memoria_contexto_sheet and not contexto_soporte_interno:
             contexto_sheet = memoria_contexto_sheet[session_id]
 
-        # 🔴 BLOQUEO ANTI-ALUCINACIÓN
-        #if not contexto_sheet:return {"respuesta": "No existe información en el registro para esta consulta.","tokens_usados": 0}
+        # ==========================================
+        # 💬 PROCESO DE CHAT NATIVO CON GEMINI
+        # ==========================================
+        chat_sesion = obtener_o_crear_chat(session_id)
 
-        historial = memoria_conversacion[session_id]
-        historial_txt = "\n".join(
-            [f"U: {h['u']}\nA: {h['a']}" for h in historial[-2:]]
+        # Construimos el prompt dinámico. El contexto va oculto internamente para que Gemini 
+        # lo procese en segundo plano sin forzar elementos rígidos visuales en la respuesta.
+        prompt_inyectado = ""
+        if contexto_soporte_interno:
+            prompt_inyectado += f"\n[DATOS TÉCNICOS SENSORIZADOS/HISTÓRICOS]:\n{contexto_soporte_interno}\n"
+        elif contexto_sheet:
+            prompt_inyectado += f"\n[REGISTROS EXCEL DE SOPORTE]:\n{contexto_sheet}\n"
+
+        prompt_final = (
+            f"{prompt_inyectado}"
+            f"El usuario te hace la siguiente consulta en el chat. "
+            f"Responde de forma redactada, natural y fluida como un Ingeniero Senior de Mantenimiento:\n"
+            f"Mensaje del Colaborador: {texto}"
         )
 
-        # -------- PROMPT RESTRICTIVO --------
-
-        if contexto_sheet:
-         prompt = f"""
-Eres un ingeniero senior de mantenimiento en gestión de mantenimiento industrial.
-
-Debes usar EXCLUSIVAMENTE la información contenida en 'Registros Excel'.
-
-Puedes:
-- Analizar los datos
-- Calcular indicadores
-- Hacer conteos
-- Identificar patrones
-- Generar métricas
-- Resumir información
-
-NO puedes:
-- Inventar órdenes
-- Inventar técnicos
-- Inventar fechas
-- Agregar datos que no estén en los registros
-
-Debes interpretar y responder como un experto en el tema.
-Si la información necesaria no está en los registros,
-debes responder exactamente:
-"No existe información en la base de datos para esta consulta, puedes detallarme tu pregunta o puedes realizar otra."
-
-Historial:
-{historial_txt}
-
-Registros Excel:
-{contexto_sheet}
-
-Usuario: {texto}
-"""
-        else:
-         prompt = f"""
-         Responde como asistente técnico experto en mantenimiento industrial.
-         Si la pregunta es general, responde normalmente.
-         No inventes datos específicos de órdenes o registros.
-
-         Historial:
-         {historial_txt}
-
-          Usuario: {texto}
-          """
-
-        response = model.generate_content(prompt)
-
+        # Enviamos el mensaje al chat con memoria de Gemini
+        response = chat_sesion.send_message(prompt_final)
+        
         usage = response.usage_metadata
+        total_tokens = usage.total_token_count if usage else 0
 
-        print(f"\n--- REPORTE DE CONSUMO (Sesión: {session_id}) ---")
-        print(f"Tokens Entrada: {usage.prompt_token_count}")
-        print(f"Tokens Salida: {usage.candidates_token_count}")
-        print(f"Tokens Totales: {usage.total_token_count}")
+        print(f"\n--- REPORTE DE CONSUMO CHAT (Sesión: {session_id}) ---")
+        print(f"Tokens Totales Usados en esta interacción: {total_tokens}")
         print("------------------------------------------\n")
-
-        memoria_conversacion[session_id].append({
-            "u": texto,
-            "a": response.text
-        })
-
-        if len(memoria_conversacion[session_id]) > 5:
-            memoria_conversacion[session_id].pop(0)
 
         return {
             "respuesta": response.text,
-            "tokens_usados": usage.total_token_count
+            "tokens_usados": total_tokens
         }
 
-      
     except Exception as e:
-        # Esto te ayudará a ver en el log EXACTAMENTE qué falló
         import traceback
         print(f"Error detallado: {traceback.format_exc()}")
-        return {"respuesta": f"Error interno: {str(e)}"}
+        return {"respuesta": f"Lo siento, ocurrió un error interno al procesar tu solicitud: {str(e)}", "tokens_usados": 0}
+
 # ==========================================
 # ENDPOINT STATUS
 # ==========================================
