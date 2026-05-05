@@ -123,26 +123,34 @@ def analizar_entidad(df, texto_usuario):
 
 def detectar_equipo_en_texto(df, texto):
 
-    if df is None or df.empty:
-      return None
-
-    if df is None or not texto:
+    if df is None or df.empty or not texto:
         return None
 
-    texto = texto.lower()
+    texto_norm = normalizar(texto)
 
-    for _, row in df.iterrows():
+    # 🔥 1. Buscar por código (rápido y preciso)
+    if "CODIGO_NORM" in df.columns:
+        match = df[df["CODIGO_NORM"].str.contains(texto_norm, na=False)]
+        if not match.empty:
+            return match["CODIGO_EXTRAIDO"].iloc[0]
 
-        codigo = str(row.get("CODIGO_EXTRAIDO", "")).lower()
-        desc = str(row.get("DESCRIPCION_EXTRAIDA", "")).lower()
+    # 🔥 2. Buscar por descripción (más flexible)
+    if "DESC_NORM" in df.columns:
+        match = df[df["DESC_NORM"].str.contains(texto_norm, na=False)]
+        if not match.empty:
+            return match["CODIGO_EXTRAIDO"].iloc[0]
 
-        # 🔥 prioridad: codigo
-        if codigo and codigo in texto:
-            return row.get("CODIGO_EXTRAIDO")
+    # 🔥 3. fallback: búsqueda por palabras clave
+    palabras = [p for p in texto_norm.split() if len(p) > 3]
 
-        # 🔥 fallback: descripcion → retorna codigo
-        if desc and desc in texto:
-            return row.get("CODIGO_EXTRAIDO")
+    if palabras and "DESC_NORM" in df.columns:
+        mask = False
+        for p in palabras:
+            mask = mask | df["DESC_NORM"].str.contains(p, na=False)
+
+        match = df[mask]
+        if not match.empty:
+            return match["CODIGO_EXTRAIDO"].iloc[0]
 
     return None
 
