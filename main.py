@@ -126,21 +126,39 @@ def detectar_equipo_en_texto(df, texto):
     if df is None or df.empty or not texto:
         return None
 
+    texto_lower = texto.lower()
     texto_norm = normalizar(texto)
 
-    # 🔥 1. Buscar por código (rápido y preciso)
+    # ==========================================
+    # 🔥 1. MÉTODO ORIGINAL (rápido y confiable)
+    # ==========================================
+    for _, row in df.iterrows():
+
+        codigo = str(row.get("CODIGO_EXTRAIDO", "")).lower()
+        desc = str(row.get("DESCRIPCION_EXTRAIDA", "")).lower()
+
+        if codigo and codigo in texto_lower:
+            return row.get("CODIGO_EXTRAIDO")
+
+        if desc and desc in texto_lower:
+            return row.get("CODIGO_EXTRAIDO")
+
+    # ==========================================
+    # 🔥 2. MÉTODO NORMALIZADO (más flexible)
+    # ==========================================
     if "CODIGO_NORM" in df.columns:
         match = df[df["CODIGO_NORM"].str.contains(texto_norm, na=False)]
         if not match.empty:
             return match["CODIGO_EXTRAIDO"].iloc[0]
 
-    # 🔥 2. Buscar por descripción (más flexible)
     if "DESC_NORM" in df.columns:
         match = df[df["DESC_NORM"].str.contains(texto_norm, na=False)]
         if not match.empty:
             return match["CODIGO_EXTRAIDO"].iloc[0]
 
-    # 🔥 3. fallback: búsqueda por palabras clave
+    # ==========================================
+    # 🔥 3. BÚSQUEDA POR PALABRAS
+    # ==========================================
     palabras = [p for p in texto_norm.split() if len(p) > 3]
 
     if palabras and "DESC_NORM" in df.columns:
@@ -153,7 +171,6 @@ def detectar_equipo_en_texto(df, texto):
             return match["CODIGO_EXTRAIDO"].iloc[0]
 
     return None
-
 # ==========================================
 # CONFIGURACIÓN GEMINI
 # ==========================================
