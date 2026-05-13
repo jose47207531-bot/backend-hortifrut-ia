@@ -15,6 +15,8 @@ from core.rag import buscar_en_sheet, obtener_dataframe, formatear_contexto
 from core.rag import normalizar
 from core.insights import obtener_insights
 from core.rag import cargar_datos
+from PIL import Image
+import io
 
 print("🚀 Cargando datos al iniciar servidor...")
 cargar_datos()
@@ -249,6 +251,7 @@ async def chat(
     texto_extraido = ""
     equipo_detectado = None
     contexto_soporte_interno = ""
+    imagen = None
 
     try:            
         # -------- PROCESAMIENTO DE ARCHIVO --------
@@ -262,6 +265,13 @@ async def chat(
                 texto_extraido = extraer_de_docx(bytes_file)
             elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
                 texto_extraido = extraer_de_excel_adjunto(bytes_file)
+
+            elif "image" in mimetype:
+
+                 imagen = Image.open(io.BytesIO(bytes_file))
+                 imagen = imagen.convert("RGB")
+
+                 texto_extraido = "[Imagen enviada por el usuario]"
                 
         # Si se extrajo texto del archivo, lo agregamos a la consulta
         if texto_extraido:
@@ -416,7 +426,16 @@ async def chat(
         )
 
         # Enviamos el mensaje al chat con memoria de Gemini
-        response = chat_sesion.send_message(prompt_final)
+        if imagen:
+
+            response = chat_sesion.send_message([
+             prompt_final,
+             imagen
+            ])
+
+        else:
+
+             response = chat_sesion.send_message(prompt_final)
         
         usage = response.usage_metadata
         total_tokens = usage.total_token_count if usage else 0
