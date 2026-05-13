@@ -236,6 +236,15 @@ async def chat(
     session_id: str = Form("default_session"),
     archivo: UploadFile = File(None)
 ):
+    print("TEXTO:", texto)
+
+    if archivo:
+          print("ARCHIVO RECIBIDO:", archivo.filename)
+          print("TIPO:", archivo.content_type)
+    else:
+          print("NO SE RECIBIÓ ARCHIVO")
+
+
     df = None
     texto_extraido = ""
     equipo_detectado = None
