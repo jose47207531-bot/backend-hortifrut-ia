@@ -158,6 +158,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 print("INICIANDO PRUEBA GEMINI")
 
+
 try:
     modelos = genai.list_models()
 
