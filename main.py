@@ -155,6 +155,19 @@ def detectar_equipo_en_texto(df, texto):
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
+print("INICIANDO PRUEBA GEMINI")
+
+try:
+    modelos = genai.list_models()
+
+    for m in modelos:
+        print("MODELO:", m.name)
+
+    print("GEMINI OK")
+
+except Exception as e:
+    print("ERROR GEMINI:", str(e))
+
 # Ajustamos temperatura a 0.5 para tener respuestas más conversacionales pero precisas técnicamente
 generation_config = {
     "temperature": 0.5,
@@ -179,7 +192,7 @@ system_instruction = (
 )
 
 model = genai.GenerativeModel(
-    model_name="gemini-3.5-flash",
+    model_name="gemini-2.5-flash",
     generation_config=generation_config,
     system_instruction=system_instruction
 )
