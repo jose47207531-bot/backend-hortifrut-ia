@@ -158,10 +158,16 @@ print("API KEY CARGADA:", GEMINI_API_KEY[:15] if GEMINI_API_KEY else "NO EXISTE"
 import requests
 
 try:
-    ip = requests.get("https://api.ipify.org").text
-    print("IP PUBLICA:", ip)
+    respuesta = requests.get(
+        f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
+        timeout=20
+    )
+
+    print("STATUS GOOGLE:", respuesta.status_code)
+    print("RESPUESTA:", respuesta.text[:500])
+
 except Exception as e:
-    print("ERROR IP:", e)
+    print("ERROR GOOGLE:", e)
 
 genai.configure(api_key=GEMINI_API_KEY)
 
