@@ -154,10 +154,18 @@ def detectar_equipo_en_texto(df, texto):
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 print("API KEY CARGADA:", GEMINI_API_KEY[:15] if GEMINI_API_KEY else "NO EXISTE")
+
+import requests
+
+try:
+    ip = requests.get("https://api.ipify.org").text
+    print("IP PUBLICA:", ip)
+except Exception as e:
+    print("ERROR IP:", e)
+
 genai.configure(api_key=GEMINI_API_KEY)
 
 print("INICIANDO PRUEBA GEMINI")
-
 
 try:
     modelos = genai.list_models()
