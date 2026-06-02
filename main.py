@@ -288,6 +288,10 @@ async def chat(
             mimetype = archivo.content_type
             bytes_file = await archivo.read()
 
+            print(f"ARCHIVO: {archivo.filename}")
+            print(f"MIME: {mimetype}")
+            print(f"TAMAÑO: {len(bytes_file)/1024/1024:.2f} MB")
+
             if "pdf" in mimetype:
                 texto_extraido = extraer_de_pdf(bytes_file)
             elif "word" in mimetype or "officedocument.wordprocessingml" in mimetype:
@@ -298,6 +302,7 @@ async def chat(
             elif "image" in mimetype:
 
                  imagen = Image.open(io.BytesIO(bytes_file))
+                 print("RESOLUCION:", imagen.size)
                  imagen = imagen.convert("RGB")
 
                  texto_extraido = "[Imagen enviada por el usuario]"
