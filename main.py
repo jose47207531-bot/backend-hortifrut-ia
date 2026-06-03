@@ -18,9 +18,7 @@ from core.rag import cargar_datos
 from PIL import Image
 import io
 
-print("🚀 Cargando datos al iniciar servidor...")
 cargar_datos()
-print("✅ Datos cargados")
 
 memoria_usuario = {
     "ultimo_equipo": None,
@@ -163,15 +161,15 @@ try:
         timeout=20
     )
 
-    print("STATUS GOOGLE:", respuesta.status_code)
-    print("RESPUESTA:", respuesta.text[:500])
+    #print("STATUS GOOGLE:", respuesta.status_code)
+    #print("RESPUESTA:", respuesta.text[:500])
 
 except Exception as e:
     print("ERROR GOOGLE:", e)
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-print("INICIANDO PRUEBA GEMINI")
+#print("INICIANDO PRUEBA GEMINI")
 
 try:
     modelos = genai.list_models()
@@ -302,10 +300,11 @@ async def chat(
             elif "image" in mimetype:
 
                  imagen = Image.open(io.BytesIO(bytes_file))
-                 print("RESOLUCION:", imagen.size)
+                 
                  imagen = imagen.convert("RGB")
 
                  texto_extraido = "[Imagen enviada por el usuario]"
+                 print("RESOLUCION:", imagen.size)
                 
         # Si se extrajo texto del archivo, lo agregamos a la consulta
         if texto_extraido:
