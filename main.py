@@ -1,7 +1,7 @@
 import google.generativeai as genai
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from collections import defaultdict
+from collections import OrderedDict
 from core.insights import obtener_insights, obtener_columna_principal
 import os
 import pandas as pd
@@ -10,18 +10,31 @@ import re
 import threading
 import pdfplumber
 from docx import Document
-from core.analytics import ejecutar_analisis, generar_analisis_tecnico_avanzado
 from core.rag import buscar_en_sheet, obtener_dataframe, formatear_contexto, normalizar, cargar_datos
 from PIL import Image
 
 # Carga el Sheet en segundo plano para que el servidor arranque rápido
 threading.Thread(target=cargar_datos, daemon=True).start()
 
-memoria_usuario = {
-    "ultimo_equipo": None,
-    "ultimo_resultado": None
-}
 
+# ==========================================
+# AJUSTES DE CONSUMO (puedes modificarlos)
+# ==========================================
+
+MAX_REGISTROS_EQUIPO = 10     # registros del equipo que se envían a Gemini
+MAX_CHARS_VALOR = 200         # largo máximo de cada dato
+MAX_CHARS_NOMBRE_COL = 40     # recorta nombres de columna muy largos
+MAX_TURNOS_MEMORIA = 4        # últimas preguntas/respuestas que se recuerdan
+MAX_CHARS_RESPUESTA_MEMORIA = 600
+MAX_CHARS_ANALITICO = 3000
+MAX_SESIONES = 200
+
+COLS_EXCLUIR = {"TEXTO_RAG", "TEXTO_RAG_NORM", "TEXTO_COMPLETO", "CODIGO_NORM", "DESC_NORM"}
+
+
+# ==========================================
+# CLASIFICADORES
+# ==========================================
 
 def es_consulta_tecnica(texto):
     if not texto:
@@ -36,7 +49,8 @@ def es_consulta_tecnica(texto):
         "registro", "intervino", "stock",
         "repuestos", "trabajador",
         "paso", "pasó", "historial", "ocurrio",
-        "ocurrió"
+        "ocurrió", "cuando", "cuándo", "quien", "quién",
+        "ultimo", "último", "veces", "riesgo"
     ]
 
     # 🔥 Detectar códigos tipo HO-233-EVNH3
@@ -57,7 +71,7 @@ def es_pregunta_analitica(texto):
     texto = texto.lower()
 
     palabras = [
-        "recomienda", "recomendacion", "evitar", "prevenir", "mejorar",
+        "recomienda", "recomendacion", "recomendación", "evitar", "prevenir", "mejorar",
         "analiza", "analizar", "tendencia", "patron", "patrón",
         "indicador", "optimizar", "que paso", "que pasó",
         "historial", "comportamiento"
@@ -65,42 +79,9 @@ def es_pregunta_analitica(texto):
 
     return any(p in texto for p in palabras)
 
-# ==========================================
-# ANALISIS DINAMICO DE ENTIDAD
-# ==========================================
-
-def analizar_entidad(df, texto_usuario):
-    if df is None or texto_usuario is None:
-        return None
-
-    texto_norm = normalizar(texto_usuario)
-
-    mask = df.astype(str).apply(
-        lambda col: col.str.contains(texto_norm, case=False, na=False, regex=False)
-    )
-
-    df_filtrado = df[mask.any(axis=1)]
-
-    if df_filtrado.empty:
-        return None
-
-    total_registros = len(df_filtrado)
-
-    falla_frecuente = None
-    if "DESCRIPCIÓN DEL TRABAJO" in df_filtrado.columns:
-        falla_frecuente = (
-            df_filtrado["DESCRIPCIÓN DEL TRABAJO"]
-            .value_counts()
-            .idxmax()
-        )
-
-    return {
-        "total": total_registros,
-        "falla_frecuente": falla_frecuente
-    }
 
 # ==========================================
-# DETECTOR INTELIGENTE DE EQUIPO (más rápido y liviano)
+# DETECTOR DE EQUIPO
 # ==========================================
 
 def detectar_equipo_en_texto(df, texto):
@@ -117,15 +98,60 @@ def detectar_equipo_en_texto(df, texto):
         c = codigo.strip().lower()
         d = desc.strip().lower()
 
-        # 🔥 prioridad: codigo
         if c and c in texto:
             return codigo or None
 
-        # 🔥 fallback: descripcion → retorna codigo
         if d and d in texto:
             return codigo or None
 
     return None
+
+
+def filtrar_registros_equipo(df, col_equipo, equipo):
+    equipo_str = str(equipo)
+    condicion = df[col_equipo].astype(str) == equipo_str
+
+    for c in ["DESCRIPCION_EXTRAIDA", "DESCRIPCIÓN DEL TRABAJO"]:
+        if c in df.columns:
+            condicion = condicion | df[c].astype(str).str.contains(
+                equipo_str, case=False, na=False, regex=False
+            )
+
+    return df[condicion]
+
+
+def resumir_registros(df_equipo):
+    """Convierte los registros en texto compacto para ahorrar tokens."""
+    lineas = []
+
+    for _, fila in df_equipo.tail(MAX_REGISTROS_EQUIPO).iterrows():
+        datos = []
+
+        for col in df_equipo.columns:
+            if col in COLS_EXCLUIR:
+                continue
+
+            valor = fila[col]
+            if pd.isna(valor):
+                continue
+
+            valor = str(valor).strip()
+            if not valor or valor.lower() in ("nan", "nat"):
+                continue
+
+            if len(valor) > MAX_CHARS_VALOR:
+                valor = valor[:MAX_CHARS_VALOR] + "…"
+
+            nombre = str(col)
+            if len(nombre) > MAX_CHARS_NOMBRE_COL:
+                nombre = nombre[:MAX_CHARS_NOMBRE_COL] + "…"
+
+            datos.append(f"{nombre}: {valor}")
+
+        if datos:
+            lineas.append("• " + " | ".join(datos))
+
+    return "\n".join(lineas)
 
 
 # ==========================================
@@ -137,43 +163,72 @@ print("API KEY CARGADA:", GEMINI_API_KEY[:15] if GEMINI_API_KEY else "NO EXISTE"
 
 genai.configure(api_key=GEMINI_API_KEY)
 
+# Puedes cambiar el modelo desde Render (Environment) sin tocar el código
+MODELO_GEMINI = os.getenv("MODELO_GEMINI", "gemini-2.5-flash")
+print("MODELO GEMINI:", MODELO_GEMINI)
+
 generation_config = {
-    "temperature": 0.5,
+    "temperature": 0.4,
     "top_p": 0.95,
     "top_k": 40,
+    "max_output_tokens": 2048,
     "response_mime_type": "text/plain",
 }
 
 system_instruction = (
-    "Eres un ingeniero senior de mantenimiento experto en gestión de mantenimiento industrial. "
-    "Responde siempre en español de manera fluida, natural, amigable y sumamente conversacional (como Gemini). "
-    "Tu objetivo es ayudar tanto en consultas de la base de datos como en pautas, inquietudes o dudas del día a día de los colaboradores. "
-    "\n\nDIRECTRICES:\n"
-    "1. Cuando el usuario consulte sobre registros, órdenes, equipos, técnicos o fallas del historial, "
-    "debes apoyarte de forma estricta en la información provista en los contextos del Excel para dar tu respuesta. "
-    "Explícala de forma redactada e inteligente con tus propias palabras. No inventes datos específicos si no están presentes.\n"
-    "2. Si la información no está en los registros para esa consulta específica, indícalo amablemente diciendo: "
+    "Eres un ingeniero senior de mantenimiento industrial. Respondes en español, de forma clara, natural y amigable. "
+    "Ayudas con consultas de la base de datos de mantenimiento y con dudas técnicas del día a día de los colaboradores."
+    "\n\nREGLAS:\n"
+    "1. Si se te entregan registros de la base de datos, básate estrictamente en ellos. Explícalos con tus palabras; "
+    "no inventes datos que no estén presentes.\n"
+    "2. Si la información no está en los registros, dilo amablemente: "
     "'No existe información específica en el registro para esta consulta, pero te puedo brindar recomendaciones técnicas generales sobre el tema.'\n"
-    "3. Si el usuario te hace preguntas generales, te saluda, te pide teoría de ingeniería o recomendaciones prácticas para sus tareas diarias, "
-    "puedes responder libremente usando todos tus conocimientos técnicos de Ingeniero Senior, sin verte limitado por la base de datos."
+    "3. Si la conversación ya trata sobre un equipo, asume que las preguntas siguientes se refieren a ese mismo equipo, "
+    "salvo que el usuario mencione otro. NO pidas que especifique el equipo si ya hay uno en la conversación.\n"
+    "4. Para saludos, teoría o recomendaciones generales puedes responder libremente con tu conocimiento técnico."
+    "\n\nEXTENSIÓN Y FORMATO:\n"
+    "- Por defecto responde en 80 a 200 palabras.\n"
+    "- Empieza con la respuesta directa en 1 o 2 frases. Luego, si aporta, 2 a 4 puntos clave con datos concretos "
+    "(fechas, técnicos, fallas, acciones). Cierra con una recomendación breve solo si es útil.\n"
+    "- Extiéndete más (hasta 400 palabras) solo si el usuario pide un análisis, detalle, historial completo o paso a paso.\n"
+    "- Para saludos o preguntas simples responde en 1 a 3 frases.\n"
+    "- No repitas la pregunta, no copies todos los registros, no hagas introducciones ni despedidas largas."
 )
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
+    model_name=MODELO_GEMINI,
     generation_config=generation_config,
     system_instruction=system_instruction
 )
 
 
 # ==========================================
-# FASTAPI Y MEMORIA DE SESIONES
+# FASTAPI Y MEMORIA POR SESIÓN
 # ==========================================
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-sesiones_chat = {}
-memoria_contexto_sheet = {}
+# Memoria por usuario: equipo actual, su contexto y las últimas preguntas/respuestas
+sesiones = OrderedDict()
+
+
+def obtener_sesion(session_id):
+    if session_id not in sesiones:
+        sesiones[session_id] = {
+            "equipo": None,
+            "contexto_equipo": "",
+            "df_equipo": None,
+            "contexto_sheet": "",
+            "turnos": []
+        }
+        # Evita que la memoria crezca sin límite
+        while len(sesiones) > MAX_SESIONES:
+            sesiones.popitem(last=False)
+    else:
+        sesiones.move_to_end(session_id)
+
+    return sesiones[session_id]
 
 
 @app.get("/")
@@ -200,16 +255,6 @@ def extraer_de_excel_adjunto(bytes_file):
 
 
 # ==========================================
-# FUNCIÓN AUXILIAR DE CHAT CON MEMORIA
-# ==========================================
-
-def obtener_o_crear_chat(session_id):
-    if session_id not in sesiones_chat:
-        sesiones_chat[session_id] = model.start_chat(history=[])
-    return sesiones_chat[session_id]
-
-
-# ==========================================
 # ENDPOINT PRINCIPAL
 # ==========================================
 
@@ -219,18 +264,9 @@ async def chat(
     session_id: str = Form("default_session"),
     archivo: UploadFile = File(None)
 ):
-    print("TEXTO:", texto)
+    print("TEXTO:", texto, "| SESIÓN:", session_id)
 
-    if archivo:
-        print("ARCHIVO RECIBIDO:", archivo.filename)
-        print("TIPO:", archivo.content_type)
-    else:
-        print("NO SE RECIBIÓ ARCHIVO")
-
-    df = None
     texto_extraido = ""
-    equipo_detectado = None
-    contexto_soporte_interno = ""
     imagen = None
 
     try:
@@ -238,8 +274,7 @@ async def chat(
         if archivo:
             mimetype = archivo.content_type or ""
             bytes_file = await archivo.read()
-
-            print(f"TAMAÑO: {len(bytes_file)/1024/1024:.2f} MB")
+            print(f"ARCHIVO: {archivo.filename} | {mimetype} | {len(bytes_file)/1024/1024:.2f} MB")
 
             if "pdf" in mimetype:
                 texto_extraido = extraer_de_pdf(bytes_file)
@@ -248,174 +283,152 @@ async def chat(
             elif "excel" in mimetype or "officedocument.spreadsheetml" in mimetype:
                 texto_extraido = extraer_de_excel_adjunto(bytes_file)
             elif "image" in mimetype:
-                imagen = Image.open(io.BytesIO(bytes_file))
-                imagen = imagen.convert("RGB")
-                # Reducir imágenes grandes para ahorrar memoria
+                imagen = Image.open(io.BytesIO(bytes_file)).convert("RGB")
                 imagen.thumbnail((1600, 1600))
                 texto_extraido = "[Imagen enviada por el usuario]"
-                print("RESOLUCION:", imagen.size)
 
             del bytes_file
 
+        texto_usuario = texto or ""
         if texto_extraido:
-            texto = (texto or "") + "\n\nContenido del archivo:\n" + texto_extraido
-
-        texto = texto or ""
+            # Limita el texto de documentos adjuntos
+            texto_usuario += "\n\nContenido del archivo:\n" + texto_extraido[:6000]
 
         df = obtener_dataframe()
         if df is None or df.empty:
             return {"respuesta": "No se pudo cargar la base de datos.", "tokens_usados": 0}
 
-        equipo_detectado = detectar_equipo_en_texto(df, texto)
-
-        # Clasificadores de consultas
-        usar_excel = es_consulta_tecnica(texto)
-        es_analitica = es_pregunta_analitica(texto)
-        insights = obtener_insights() or {}
         col_equipo = obtener_columna_principal(df)
-
         if col_equipo is None:
             return {
                 "respuesta": "No se encontró columna principal de equipos en la base de datos.",
                 "tokens_usados": 0
             }
 
-        texto_lower = texto.lower()
+        sesion = obtener_sesion(session_id)
+        texto_lower = texto_usuario.lower()
+
+        usar_excel = es_consulta_tecnica(texto_usuario)
+        es_analitica = es_pregunta_analitica(texto_usuario)
+        pide_riesgo = any(p in texto_lower for p in ["riesgo", "fallar", "falla", "probabilidad"])
+        pide_anomalia = any(p in texto_lower for p in ["anomalia", "anomalía", "raro", "fuera de lo normal"])
 
         # ==========================================
-        # 🔮 PREDICCIÓN DE RIESGO
+        # 🔎 EQUIPO: nuevo o el de la conversación
         # ==========================================
-        if any(p in texto_lower for p in ["riesgo", "fallar", "falla", "probabilidad"]):
-            if equipo_detectado and "riesgo_equipos" in insights:
-                data = insights["riesgo_equipos"].get(equipo_detectado)
-                if data:
-                    contexto_soporte_interno += (
-                        f"\n[DATOS DE RIESGO DE LA BD]:\n"
-                        f"- Equipo: {equipo_detectado}\n"
-                        f"- Nivel de riesgo: {data['riesgo']}\n"
-                        f"- Score: {data['score']}\n"
-                        f"- Motivos: {', '.join(data['motivo'])}\n"
-                    )
+        equipo_nuevo = detectar_equipo_en_texto(df, texto_usuario)
 
-        # ==========================================
-        # 🚨 DETECCIÓN DE ANOMALÍAS
-        # ==========================================
-        if any(p in texto_lower for p in ["anomalia", "anomalía", "raro", "fuera de lo normal"]):
-            anomalias = insights.get("anomalias", {})
-            if equipo_detectado:
-                data = anomalias.get(equipo_detectado)
-                if data:
-                    contexto_soporte_interno += (
-                        f"\n[ANOMALÍA DETECTADA EN HISTORIAL]:\n"
-                        f"- Equipo: {equipo_detectado}\n"
-                        f"- Tipo: {data['tipo']} (Nivel: {data['nivel']})\n"
-                        f"- Valor actual: {data['valor_actual']} (Promedio: {data['promedio']})\n"
-                        f"- Z-score: {data['z_score']}\n"
-                    )
-            elif anomalias:
-                resumen_anomalias = ""
-                for eq, data in list(anomalias.items())[:5]:
-                    resumen_anomalias += f"- {eq} | Nivel: {data['nivel']} | Z-score: {data['z_score']}\n"
-                contexto_soporte_interno += (
-                    f"\n[ANOMALÍAS GENERALES EN LA PLANTA (Top 5)]:\n{resumen_anomalias}"
-                )
-
-        # ==========================================
-        # 📊 HISTORIAL DINÁMICO POR EQUIPO
-        # ==========================================
-        if equipo_detectado:
-            equipo_str = str(equipo_detectado)
-            condicion = df[col_equipo].astype(str) == equipo_str
-
-            for c in ["DESCRIPCION_EXTRAIDA", "DESCRIPCIÓN DEL TRABAJO"]:
-                if c in df.columns:
-                    condicion = condicion | df[c].astype(str).str.contains(
-                        equipo_str, case=False, na=False, regex=False
-                    )
-
-            df_equipo = df[condicion]
-
+        if equipo_nuevo and equipo_nuevo != sesion["equipo"]:
+            df_equipo = filtrar_registros_equipo(df, col_equipo, equipo_nuevo)
             if not df_equipo.empty:
-                memoria_usuario["ultimo_equipo"] = equipo_detectado
-                memoria_usuario["ultimo_resultado"] = df_equipo.tail(30).copy()
+                sesion["equipo"] = equipo_nuevo
+                sesion["df_equipo"] = df_equipo.tail(30).copy()
+                sesion["contexto_equipo"] = resumir_registros(df_equipo)
+                sesion["contexto_sheet"] = ""
+                print("EQUIPO NUEVO:", equipo_nuevo)
 
-                lineas_historial = []
+        equipo = sesion["equipo"]  # se mantiene en las preguntas siguientes
 
-                for _, fila in df_equipo.tail(15).iterrows():
-                    datos_activos = []
+        # ==========================================
+        # 📦 ARMAR CONTEXTO (solo lo necesario)
+        # ==========================================
+        bloques = []
 
-                    for col in df_equipo.columns:
-                        if col in ["TEXTO_RAG", "TEXTO_RAG_NORM", "TEXTO_COMPLETO", "CODIGO_NORM", "DESC_NORM"]:
-                            continue
+        necesita_datos = bool(equipo_nuevo) or usar_excel or es_analitica or pide_riesgo or pide_anomalia
 
-                        valor = fila[col]
-                        if pd.notna(valor) and str(valor).strip() != "" and str(valor).lower() != "nan":
-                            datos_activos.append(f"{col}: {str(valor).strip()}")
+        if equipo and sesion["contexto_equipo"]:
+            if necesita_datos:
+                bloques.append(
+                    f"[EQUIPO EN CONVERSACIÓN: {equipo}]\n"
+                    f"[ÚLTIMOS REGISTROS DE MANTENIMIENTO]:\n{sesion['contexto_equipo']}"
+                )
+            else:
+                # Pregunta general: solo se recuerda el equipo, sin enviar registros
+                bloques.append(f"[EQUIPO EN CONVERSACIÓN: {equipo}]")
 
-                    if datos_activos:
-                        lineas_historial.append("• " + " | ".join(datos_activos))
+        insights = {}
+        if pide_riesgo or pide_anomalia:
+            insights = obtener_insights() or {}
 
-                historial_sintetizado = "\n".join(lineas_historial)
-
-                contexto_soporte_interno += (
-                    f"\n[REGISTROS DE MANTENIMIENTO REALES PARA EL EQUIPO {equipo_detectado}]:\n"
-                    f"{historial_sintetizado}\n"
+        # 🔮 Riesgo
+        if pide_riesgo and equipo and "riesgo_equipos" in insights:
+            data = insights["riesgo_equipos"].get(equipo)
+            if data:
+                bloques.append(
+                    f"[RIESGO DEL EQUIPO {equipo}]: nivel {data['riesgo']}, score {data['score']}, "
+                    f"motivos: {', '.join(data['motivo'])}"
                 )
 
-        # ==========================================
-        # 🔥 MODO ANALÍTICO AVANZADO
-        # ==========================================
-        if es_analitica and memoria_usuario["ultimo_resultado"] is not None:
-            df_eq = memoria_usuario["ultimo_resultado"]
-            if "TEXTO_RAG" in df_eq.columns:
-                resumen_rag = df_eq["TEXTO_RAG"].astype(str).str.cat(sep=" ")
-                contexto_soporte_interno += (
-                    f"\n[HISTORIAL ADICIONAL DE ANÁLISIS DE {memoria_usuario['ultimo_equipo']}]:\n"
-                    f"{resumen_rag}\n"
+        # 🚨 Anomalías
+        if pide_anomalia:
+            anomalias = insights.get("anomalias", {})
+            if equipo and anomalias.get(equipo):
+                data = anomalias[equipo]
+                bloques.append(
+                    f"[ANOMALÍA {equipo}]: tipo {data['tipo']} (nivel {data['nivel']}), "
+                    f"valor actual {data['valor_actual']} vs promedio {data['promedio']}, z-score {data['z_score']}"
                 )
+            elif anomalias:
+                resumen = "\n".join(
+                    f"- {eq} | Nivel: {d['nivel']} | Z-score: {d['z_score']}"
+                    for eq, d in list(anomalias.items())[:5]
+                )
+                bloques.append(f"[ANOMALÍAS GENERALES (Top 5)]:\n{resumen}")
+
+        # 🔥 Modo analítico
+        if es_analitica and sesion["df_equipo"] is not None and "TEXTO_RAG" in sesion["df_equipo"].columns:
+            resumen_rag = sesion["df_equipo"]["TEXTO_RAG"].astype(str).str.cat(sep=" ")[:MAX_CHARS_ANALITICO]
+            bloques.append(f"[HISTORIAL PARA ANÁLISIS DE {equipo}]:\n{resumen_rag}")
+
+        # 🌐 Búsqueda general en el Sheet (solo si no hay equipo en conversación)
+        if not equipo and usar_excel:
+            resultado = buscar_en_sheet(texto_usuario)
+            if resultado is not None and not resultado.empty:
+                sesion["contexto_sheet"] = formatear_contexto(resultado)[:4000]
+
+        if not equipo and sesion["contexto_sheet"] and necesita_datos:
+            bloques.append(f"[REGISTROS DE SOPORTE]:\n{sesion['contexto_sheet']}")
+
+        # 💬 Conversación reciente (memoria corta y controlada)
+        if sesion["turnos"]:
+            historial = "\n".join(
+                f"Usuario: {t['usuario']}\nAsistente: {t['asistente']}"
+                for t in sesion["turnos"]
+            )
+            bloques.append(f"[CONVERSACIÓN RECIENTE]:\n{historial}")
+
+        bloques.append(f"[PREGUNTA ACTUAL DEL COLABORADOR]:\n{texto_usuario}")
+        prompt_final = "\n\n".join(bloques)
 
         # ==========================================
-        # 🌐 BÚSQUEDA EN SHEETS (RAG)
+        # 🤖 LLAMADA A GEMINI
         # ==========================================
-        contexto_sheet = ""
-        if usar_excel and not contexto_soporte_interno:
-            resultado = buscar_en_sheet(texto)
-            contexto_sheet = formatear_contexto(resultado)
-            if contexto_sheet:
-                memoria_contexto_sheet[session_id] = contexto_sheet
-        elif session_id in memoria_contexto_sheet and not contexto_soporte_interno:
-            contexto_sheet = memoria_contexto_sheet[session_id]
-
-        # ==========================================
-        # 💬 CHAT CON GEMINI
-        # ==========================================
-        chat_sesion = obtener_o_crear_chat(session_id)
-
-        prompt_inyectado = ""
-        if contexto_soporte_interno:
-            prompt_inyectado += f"\n[DATOS TÉCNICOS HISTÓRICOS Y SENSORIZADOS]:\n{contexto_soporte_interno}\n"
-        elif contexto_sheet:
-            prompt_inyectado += f"\n[REGISTROS EXCEL DE SOPORTE]:\n{contexto_sheet}\n"
-
-        prompt_final = (
-            f"{prompt_inyectado}"
-            f"El usuario te hace la siguiente consulta en el chat. "
-            f"Responde de forma redactada, natural, amigable y muy fluida como un Ingeniero Senior de Mantenimiento:\n"
-            f"Mensaje del Colaborador: {texto}"
-        )
-
         if imagen:
-            response = chat_sesion.send_message([prompt_final, imagen])
+            response = model.generate_content([prompt_final, imagen])
         else:
-            response = chat_sesion.send_message(prompt_final)
+            response = model.generate_content(prompt_final)
+
+        try:
+            respuesta_texto = response.text
+        except Exception:
+            respuesta_texto = "No pude generar una respuesta completa. ¿Puedes reformular la pregunta?"
+
+        # Guardar el turno en memoria (recortado)
+        sesion["turnos"].append({
+            "usuario": (texto or "")[:300],
+            "asistente": respuesta_texto[:MAX_CHARS_RESPUESTA_MEMORIA]
+        })
+        sesion["turnos"] = sesion["turnos"][-MAX_TURNOS_MEMORIA:]
 
         usage = response.usage_metadata
-        total_tokens = usage.total_token_count if usage else 0
+        total_tokens = getattr(usage, "total_token_count", 0) if usage else 0
+        tokens_entrada = getattr(usage, "prompt_token_count", 0) if usage else 0
+        tokens_salida = getattr(usage, "candidates_token_count", 0) if usage else 0
 
-        print(f"--- Tokens usados (Sesión: {session_id}): {total_tokens} ---")
+        print(f"TOKENS → entrada: {tokens_entrada} | respuesta: {tokens_salida} | total: {total_tokens} | equipo: {equipo}")
 
         return {
-            "respuesta": response.text,
+            "respuesta": respuesta_texto,
             "tokens_usados": total_tokens
         }
 
