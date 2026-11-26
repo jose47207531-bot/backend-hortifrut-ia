@@ -171,7 +171,6 @@ generation_config = {
     "temperature": 0.4,
     "top_p": 0.95,
     "top_k": 40,
-    "max_output_tokens": 2048,
     "response_mime_type": "text/plain",
 }
 
@@ -187,12 +186,15 @@ system_instruction = (
     "salvo que el usuario mencione otro. NO pidas que especifique el equipo si ya hay uno en la conversación.\n"
     "4. Para saludos, teoría o recomendaciones generales puedes responder libremente con tu conocimiento técnico."
     "\n\nEXTENSIÓN Y FORMATO:\n"
-    "- Por defecto responde en 80 a 200 palabras.\n"
-    "- Empieza con la respuesta directa en 1 o 2 frases. Luego, si aporta, 2 a 4 puntos clave con datos concretos "
-    "(fechas, técnicos, fallas, acciones). Cierra con una recomendación breve solo si es útil.\n"
-    "- Extiéndete más (hasta 400 palabras) solo si el usuario pide un análisis, detalle, historial completo o paso a paso.\n"
-    "- Para saludos o preguntas simples responde en 1 a 3 frases.\n"
-    "- No repitas la pregunta, no copies todos los registros, no hagas introducciones ni despedidas largas."
+    "- Ajusta la extensión a lo que la pregunta realmente necesita: ni más ni menos.\n"
+    "- Preguntas puntuales (una fecha, un técnico, un estado): respuesta directa y breve, con el dato y una frase de contexto.\n"
+    "- Preguntas de análisis, diagnóstico, historial, comparaciones, procedimientos o paso a paso: responde con toda la "
+    "extensión necesaria, bien organizada (puntos o secciones), sin omitir información importante.\n"
+    "- Saludos o comentarios simples: 1 a 3 frases.\n"
+    "- Empieza siempre con la respuesta directa; luego los detalles que aporten valor.\n"
+    "- Sé conciso en la forma, no en el contenido: evita relleno, no repitas la pregunta, no copies los registros "
+    "tal cual y no hagas introducciones ni despedidas largas.\n"
+    "- Termina siempre tus ideas y frases completas."
 )
 
 model = genai.GenerativeModel(
@@ -412,6 +414,11 @@ async def chat(
             respuesta_texto = response.text
         except Exception:
             respuesta_texto = "No pude generar una respuesta completa. ¿Puedes reformular la pregunta?"
+
+        try:
+            print("FINISH:", response.candidates[0].finish_reason)
+        except Exception:
+            pass
 
         # Guardar el turno en memoria (recortado)
         sesion["turnos"].append({
