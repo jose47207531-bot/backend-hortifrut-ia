@@ -18,7 +18,8 @@ from core.rag import cargar_datos
 from PIL import Image
 import io
 
-cargar_datos()
+import threading
+threading.Thread(target=cargar_datos, daemon=True).start()
 
 memoria_usuario = {
     "ultimo_equipo": None,
