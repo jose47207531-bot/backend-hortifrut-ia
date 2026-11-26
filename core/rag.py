@@ -79,7 +79,7 @@ def cargar_datos():
             print("📥 Descargando CSV...")
 
 
-            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=5)
+            res = requests.get(GOOGLE_SHEET_CSV_URL, timeout=30)
             res.raise_for_status()      
 
             print("✅ CSV descargado")
