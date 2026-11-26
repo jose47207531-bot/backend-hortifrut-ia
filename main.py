@@ -158,7 +158,7 @@ import requests
 try:
     respuesta = requests.get(
         f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
-        timeout=20
+        timeout=40
     )
 
     #print("STATUS GOOGLE:", respuesta.status_code)
